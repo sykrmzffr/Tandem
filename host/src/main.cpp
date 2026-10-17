@@ -293,7 +293,9 @@ void RunSession(SOCKET sock, const Options& opt, const std::function<bool()>& st
         w = UINT(w * f) & ~1u;
         h = UINT(h * f) & ~1u;
     }
-    UINT bitrate = opt.bitrateMbps ? opt.bitrateMbps * 1000000 : AutoBitrate(w, h, std::min(fps, 60u));
+    // Budget per frame stays the same at any rate: at 120 Hz with a 60 Hz budget each
+    // frame got half the bits, and text went soft whenever the screen changed.
+    UINT bitrate = opt.bitrateMbps ? opt.bitrateMbps * 1000000 : AutoBitrate(w, h, fps);
 
     Capture cap;
     Input input;
@@ -407,6 +409,13 @@ void RunSession(SOCKET sock, const Options& opt, const std::function<bool()>& st
     // arrives early stays pending instead of being dropped.
     const uint64_t minIntervalUs = 1000000 / fps * 3 / 4;
     bool pending = false;
+    // While the screen changes, frames are squeezed to keep latency low and look soft.
+    // Frames are only sent on change, so the last soft one would stay up until the next
+    // change; once the screen is still, send the same image a few more times so the
+    // encoder sharpens it, then go idle.
+    constexpr int kRefineFrames = 8;
+    constexpr uint64_t kRefineIntervalUs = 40000;
+    int refineLeft = 0;
     uint64_t lastPing = 0;
     uint64_t quietSince = 0; // the tablet went silent (but may still be attached)
     while (alive && !g_quit && !g_restart && !sendFailed) {
@@ -471,7 +480,8 @@ void RunSession(SOCKET sock, const Options& opt, const std::function<bool()>& st
         uint64_t now = NowUs();
         bool needKey = keyRequested.exchange(false);
         if (needKey) enc->ForceKeyframe();
-        if ((pending && now - lastSubmit >= minIntervalUs) || needKey || lastSubmit == 0) {
+        bool refine = !pending && refineLeft > 0 && now - lastSubmit >= kRefineIntervalUs;
+        if ((pending && now - lastSubmit >= minIntervalUs) || needKey || lastSubmit == 0 || refine) {
             uint64_t pts = now - start;
             {
                 std::lock_guard<std::mutex> lock(timingMu);
@@ -480,6 +490,7 @@ void RunSession(SOCKET sock, const Options& opt, const std::function<bool()>& st
             }
             if (!enc->Submit(cap, pts)) break;
             lastSubmit = now;
+            refineLeft = refine ? refineLeft - 1 : kRefineFrames;
             pending = false;
         } else if (pending) {
             Sleep(1);
