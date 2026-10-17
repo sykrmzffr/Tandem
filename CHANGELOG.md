@@ -38,6 +38,10 @@ All notable changes to Tandem (called FreeDisplay up to version 1.2.0). Versions
 - The tablet no longer flashes its waiting screen (with a soft picture for a
   moment afterwards) every few minutes: short pauses on the USB link are now
   ridden out instead of restarting the stream.
+- The picture no longer stays blurry after you scroll, type or move a window:
+  once the screen is still, it is sharpened again within a fraction of a
+  second. At 120 Hz the stream also gets twice the data it had before, so
+  moving content looks cleaner.
 
 ### Upgrading from 1.2.0
 - Run `Tandem.exe` and choose Yes; it replaces FreeDisplay. The tablet app
