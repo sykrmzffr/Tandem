@@ -321,6 +321,11 @@ void RunSession(SOCKET sock, const Options& opt, const std::function<bool()>& st
                (restartForExactFit ? L". Restart Windows once for a sharper, exact fit on this tablet" : L""),
            true);
     g_restart = false;
+    // Windows moved off the tablet screen when it went away go back to it now.
+    if (isVdd) {
+        if (int n = VirtualMonitor::RestoreWindows(AppSettings().restoreWindows))
+            Log("Moved %d window(s) back to the tablet screen", n);
+    }
 
     // Per-frame timestamps (host clock, microseconds) for the latency breakdown.
     struct Timing {

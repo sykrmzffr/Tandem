@@ -25,6 +25,7 @@ enum MenuId : UINT {
     kIdSaverOff,
     kIdAutostart,
     kIdMoveBack,
+    kIdRestoreWindows,
     kIdSettings,
     kIdExtend,
     kIdDuplicate,
@@ -56,6 +57,7 @@ enum ControlId : int {
     kCtlRestart,
     kCtlOrientLabel,
     kCtlOrient,
+    kCtlRestoreWindows,
 };
 
 constexpr int kQualityValues[] = {100, 75, 50};
@@ -182,9 +184,10 @@ void Tray::ApplyStatus() {
 void Tray::SettingsChanged(int oldQuality, int oldOrientation) {
     Settings& s = AppSettings();
     s.Save();
-    Log("Settings: touch=%d pen=%d quality=%d%% batterySaver=%d startWithWindows=%d moveWindowsBack=%d",
+    Log("Settings: touch=%d pen=%d quality=%d%% batterySaver=%d startWithWindows=%d moveWindowsBack=%d "
+        "restoreWindows=%d",
         int(s.touch), int(s.pen), int(s.qualityPct), int(s.batterySaver), int(s.startWithWindows),
-        int(s.moveWindowsBack));
+        int(s.moveWindowsBack), int(s.restoreWindows));
     if ((s.qualityPct != oldQuality || s.orientation != oldOrientation) && cb_.onQualityChanged)
         cb_.onQualityChanged();
     // Battery saver changes are picked up by the stream itself (it restarts at the new rate).
@@ -231,6 +234,8 @@ void Tray::ShowMenu() {
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(saver), L"&Battery saver");
     AppendMenuW(menu, MF_STRING | (s.moveWindowsBack ? MF_CHECKED : 0), kIdMoveBack,
                 L"&Turn off the tablet screen when it disconnects");
+    AppendMenuW(menu, MF_STRING | (s.restoreWindows ? MF_CHECKED : 0), kIdRestoreWindows,
+                L"Move &windows back to the tablet when it reconnects");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | (s.startWithWindows ? MF_CHECKED : 0), kIdAutostart, L"Start with &Windows");
     AppendMenuW(menu, MF_STRING, kIdLog, L"Open &log");
@@ -258,6 +263,7 @@ void Tray::ShowMenu() {
     case kIdSaverAlways: s.batterySaver = Settings::kSaverAlways; break;
     case kIdSaverOff: s.batterySaver = Settings::kSaverOff; break;
     case kIdMoveBack: s.moveWindowsBack = !s.moveWindowsBack; break;
+    case kIdRestoreWindows: s.restoreWindows = !s.restoreWindows; break;
     case kIdAutostart:
         if (Settings::ApplyStartWithWindows(!s.startWithWindows)) s.startWithWindows = !s.startWithWindows;
         break;
@@ -310,6 +316,8 @@ void Tray::ShowSettings() {
     add(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, kCtlOrient);
     add(L"BUTTON", L"&Turn off the tablet screen when it disconnects", BS_AUTOCHECKBOX | WS_TABSTOP,
         kCtlMoveBack);
+    add(L"BUTTON", L"&Move windows back to the tablet when it reconnects", BS_AUTOCHECKBOX | WS_TABSTOP,
+        kCtlRestoreWindows);
     add(L"BUTTON", L"Start with &Windows", BS_AUTOCHECKBOX | WS_TABSTOP, kCtlAutostart);
     add(L"BUTTON", L"Open &log", BS_PUSHBUTTON | WS_TABSTOP, kCtlLog);
     add(L"BUTTON", L"&Restart app", BS_PUSHBUTTON | WS_TABSTOP, kCtlRestart);
@@ -377,10 +385,11 @@ void Tray::LayoutSettings() {
         {kCtlOrientLabel, margin, 326, inner, 20},
         {kCtlOrient, margin, 348, inner, 200},
         {kCtlMoveBack, margin, 388, inner, 22},
-        {kCtlAutostart, margin, 414, inner, 22},
-        {kCtlLog, margin, 456, 105, 30},
-        {kCtlRestart, margin + 117, 456, 106, 30},
-        {IDCANCEL, width - margin - 105, 456, 105, 30},
+        {kCtlRestoreWindows, margin, 414, inner, 22},
+        {kCtlAutostart, margin, 440, inner, 22},
+        {kCtlLog, margin, 482, 105, 30},
+        {kCtlRestart, margin + 117, 482, 106, 30},
+        {IDCANCEL, width - margin - 105, 482, 105, 30},
     };
     for (const Place& p : places) {
         HWND c = GetDlgItem(settings_, p.id);
@@ -388,7 +397,7 @@ void Tray::LayoutSettings() {
         SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(p.id == kCtlTitle ? titleFont_ : font_), TRUE);
     }
 
-    RECT rc{0, 0, px(width), px(504)};
+    RECT rc{0, 0, px(width), px(530)};
     AdjustWindowRectExForDpi(&rc, GetWindowLongW(settings_, GWL_STYLE), FALSE, 0, dpi);
     SetWindowPos(settings_, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -399,6 +408,7 @@ void Tray::RefreshSettings() {
     CheckDlgButton(settings_, kCtlTouch, s.touch ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(settings_, kCtlPen, s.pen ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(settings_, kCtlMoveBack, s.moveWindowsBack ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(settings_, kCtlRestoreWindows, s.restoreWindows ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(settings_, kCtlAutostart, s.startWithWindows ? BST_CHECKED : BST_UNCHECKED);
     int q = 1;
     for (int i = 0; i < 3; i++)
@@ -417,6 +427,7 @@ void Tray::OnSettingsCommand(int id, int code) {
     case kCtlTouch: s.touch = checked(kCtlTouch); break;
     case kCtlPen: s.pen = checked(kCtlPen); break;
     case kCtlMoveBack: s.moveWindowsBack = checked(kCtlMoveBack); break;
+    case kCtlRestoreWindows: s.restoreWindows = checked(kCtlRestoreWindows); break;
     case kCtlAutostart: {
         bool want = checked(kCtlAutostart);
         if (Settings::ApplyStartWithWindows(want)) s.startWithWindows = want;

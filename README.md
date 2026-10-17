@@ -113,6 +113,9 @@ settings window; right-click it for the same options as a menu, plus **Quit**:
   back in restores Extend (or Duplicate). With another monitor attached it only
   moves windows back, so that monitor stays on. The driver itself stays
   installed and running: switching it off and on froze Windows in testing.
+- **Move windows back to the tablet when it reconnects** (on by default): the
+  windows that were on the tablet screen return to their places on it, unless
+  you moved, minimized or closed them in the meantime.
 - **Orientation**: Auto (follows the tablet), Landscape or Portrait. The
   virtual monitor switches to the matching shape. Android 16 lets large
   tablets ignore an app's rotation request, so when the tablet's screen is the

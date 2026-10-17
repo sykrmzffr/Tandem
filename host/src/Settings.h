@@ -10,6 +10,7 @@ struct Settings {
     std::atomic<int> qualityPct{75};        // encode size as % of the monitor (100/75/50)
     std::atomic<bool> startWithWindows{false};
     std::atomic<bool> moveWindowsBack{true}; // turn off the tablet screen (or move windows back) when it goes away
+    std::atomic<bool> restoreWindows{true}; // put windows back on the tablet screen when it returns
     std::atomic<int> restoreMode{-1}; // screen mode to restore when the tablet returns (0 extend, 1 duplicate)
     enum Saver : int { kSaverOnBattery = 0, kSaverAlways = 1, kSaverOff = 2 };
     std::atomic<int> batterySaver{kSaverOnBattery}; // 60 Hz instead of up to 120 Hz

@@ -25,6 +25,9 @@ All notable changes to Tandem (called FreeDisplay up to version 1.2.0). Versions
   can no longer end up on a screen that isn't there. Plugging the tablet back
   in restores Extend or Duplicate. With another monitor attached, windows are
   moved back instead, so that monitor stays on.
+- **Windows return to the tablet when it reconnects.** The windows that were on
+  the tablet screen go back to their places on it (unless you moved or closed
+  them meanwhile). New setting, on by default.
 - README: requirements, quick start from GitHub, troubleshooting.
 
 ### Improved

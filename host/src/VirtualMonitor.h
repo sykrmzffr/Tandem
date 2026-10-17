@@ -47,6 +47,12 @@ bool Bounds(RECT& out);
 // but some apps (e.g. Flutter ones) put themselves back at their old position.
 int MoveStrandedWindows(const RECT& area);
 
+// Moves the windows that MoveWindowsToPrimary / MoveStrandedWindows took off the
+// VDD monitor back to their places on it (scaled if its size changed), unless they
+// were closed or the user moved, minimized or maximized them since. With apply
+// false, only forgets them. Returns the number of windows moved back.
+int RestoreWindows(bool apply);
+
 // Moves app windows (and the pointer) off the VDD monitor onto the primary
 // monitor, keeping their state (normal/maximized/minimized) and their place
 // relative to the screen. Returns the number of windows moved.
