@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <mutex>
 #include <vector>
 #include "Util.h"
 
@@ -65,6 +66,34 @@ RECT MapRect(const RECT& r, const RECT& from, const RECT& to) {
     LONG dy = std::max(to.top - o.top, std::min<LONG>(0, to.bottom - o.bottom));
     OffsetRect(&o, dx, dy);
     return o;
+}
+
+// Windows taken off the VDD monitor, to put back when the tablet returns.
+struct MovedWindow {
+    HWND hwnd;
+    DWORD pid;
+    RECT from;     // normal position on the VDD monitor (screen coordinates)
+    RECT fromArea; // the VDD monitor's work area then
+    POINT placedAt; // top-left after the move, to notice when the user moves it
+    bool maximized, minimized;
+};
+std::mutex g_movedMu;
+std::vector<MovedWindow> g_moved;
+
+void Remember(HWND w, const RECT& from, const RECT& fromArea, bool maximized, bool minimized) {
+    MovedWindow m{w, 0, from, fromArea, {}, maximized, minimized};
+    GetWindowThreadProcessId(w, &m.pid);
+    RECT now;
+    if (GetWindowRect(w, &now)) m.placedAt = {now.left, now.top};
+    std::lock_guard<std::mutex> lock(g_movedMu);
+    g_moved.push_back(m);
+}
+
+// Window placements use workspace coordinates: origin at the primary work area.
+POINT WorkspaceOffset() {
+    MONITORINFO pmi{sizeof pmi};
+    GetMonitorInfoW(MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY), &pmi);
+    return {pmi.rcWork.left - pmi.rcMonitor.left, pmi.rcWork.top - pmi.rcMonitor.top};
 }
 
 bool FindDevice(DISPLAY_DEVICEW& out) {
@@ -236,8 +265,10 @@ int MoveStrandedWindows(const RECT& area) {
             continue;
         RECT target = MapRect(r, area, pmi.rcWork);
         if (SetWindowPos(w, nullptr, target.left, target.top, target.right - target.left,
-                         target.bottom - target.top, SWP_NOZORDER | SWP_NOACTIVATE))
+                         target.bottom - target.top, SWP_NOZORDER | SWP_NOACTIVATE)) {
+            Remember(w, r, area, false, false);
             moved++;
+        }
     }
     return moved;
 }
@@ -261,6 +292,10 @@ int MoveWindowsToPrimary() {
         },
         reinterpret_cast<LPARAM>(&windows));
 
+    {
+        std::lock_guard<std::mutex> lock(g_movedMu);
+        g_moved.clear(); // a new disconnect: remember this batch
+    }
     int moved = 0;
     for (HWND w : windows) {
         if (!IsMovableWindow(w)) continue;
@@ -286,6 +321,7 @@ int MoveWindowsToPrimary() {
             wp.showCmd = SW_SHOWMAXIMIZED;
             SetWindowPlacement(w, &wp);
         }
+        Remember(w, normal, vdd.work, maximized, minimized);
         moved++;
     }
 
@@ -293,6 +329,52 @@ int MoveWindowsToPrimary() {
     if (GetCursorPos(&cursor) && MonitorFromPoint(cursor, MONITOR_DEFAULTTONULL) == vdd.handle)
         SetCursorPos((pmi.rcWork.left + pmi.rcWork.right) / 2, (pmi.rcWork.top + pmi.rcWork.bottom) / 2);
     return moved;
+}
+
+int RestoreWindows(bool apply) {
+    std::vector<MovedWindow> moved;
+    {
+        std::lock_guard<std::mutex> lock(g_movedMu);
+        moved.swap(g_moved);
+    }
+    MonitorRects vdd;
+    std::wstring name = Find();
+    if (!apply || moved.empty() || name.empty() || !FindMonitor(name, vdd)) return 0;
+    HMONITOR primary = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    if (primary == vdd.handle) return 0;
+    POINT ws = WorkspaceOffset();
+
+    int restored = 0;
+    for (const MovedWindow& m : moved) {
+        DWORD pid = 0;
+        if (!IsWindow(m.hwnd) || !GetWindowThreadProcessId(m.hwnd, &pid) || pid != m.pid) continue; // closed
+        // Leave windows the user dealt with since: moved, minimized, restored or maximized.
+        bool minimized = IsIconic(m.hwnd) != FALSE, maximized = !minimized && IsZoomed(m.hwnd);
+        if (minimized != m.minimized || maximized != m.maximized) continue;
+        if (!minimized && MonitorFromWindow(m.hwnd, MONITOR_DEFAULTTONEAREST) != primary) continue;
+        RECT now;
+        if (!minimized && !maximized &&
+            (!GetWindowRect(m.hwnd, &now) || std::abs(now.left - m.placedAt.x) > 64 ||
+             std::abs(now.top - m.placedAt.y) > 64))
+            continue;
+
+        WINDOWPLACEMENT wp{sizeof wp};
+        if (!GetWindowPlacement(m.hwnd, &wp)) continue;
+        RECT target = MapRect(m.from, m.fromArea, vdd.work);
+        OffsetRect(&target, -ws.x, -ws.y);
+        wp.rcNormalPosition = target;
+        wp.flags &= WPF_RESTORETOMAXIMIZED;
+        // As in MoveWindowsToPrimary: a maximized window moves monitors only when
+        // restored onto the new one first.
+        wp.showCmd = minimized ? SW_SHOWMINNOACTIVE : SW_SHOWNOACTIVATE;
+        if (!SetWindowPlacement(m.hwnd, &wp)) continue;
+        if (maximized) {
+            wp.showCmd = SW_SHOWMAXIMIZED;
+            SetWindowPlacement(m.hwnd, &wp);
+        }
+        restored++;
+    }
+    return restored;
 }
 
 } // namespace VirtualMonitor
