@@ -604,16 +604,20 @@ void HostLoop(Options opt) {
     bool needRescue = !VirtualMonitor::Find().empty() && VirtualMonitor::Topology() != 2; // off at start without a tablet
     auto rescueWindows = [&](const char* why) {
         needRescue = false;
-        if (!settings.moveWindowsBack) return;
         int mode = VirtualMonitor::Topology();
-        if ((mode == 0 || mode == 1) && VirtualMonitor::OnlyVddBesidesBuiltIn()) {
+        // Win+P "Second screen only" can leave the tablet as the only screen; without it
+        // nothing would be visible, so switch back to this PC's screen even when the
+        // setting is off.
+        bool onlyTablet = VirtualMonitor::OnlyVddActive();
+        if (!settings.moveWindowsBack && !onlyTablet) return;
+        if (onlyTablet || ((mode == 0 || mode == 1) && VirtualMonitor::OnlyVddBesidesBuiltIn())) {
             // Move windows ourselves first: when the screen goes, Windows should move
             // them, but some apps put themselves back where they were, off-screen.
             RECT area{};
             bool haveArea = VirtualMonitor::Bounds(area);
             int moved = VirtualMonitor::MoveWindowsToPrimary();
             if (VirtualMonitor::SetTopology(2)) {
-                settings.restoreMode = mode;
+                settings.restoreMode = onlyTablet ? 3 : mode;
                 settings.Save();
                 Log("%s: moved %d window(s) back and turned the tablet screen off", why, moved);
                 Status(L"Tablet screen off until the tablet is connected");
@@ -728,6 +732,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     enum class Setup { None, Install, Uninstall } setup = Setup::None;
     bool quiet = false;
     bool updating = false;
+    bool background = false;
     for (int i = 1; i < argc; i++) {
         std::wstring a = argv[i];
         auto next = [&] { return i + 1 < argc ? _wtoi(argv[++i]) : 0; };
@@ -753,6 +758,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
             opt.install = false;
         } else if (a == L"--install") {
             setup = Setup::Install;
+        } else if (a == L"--background") { // started with Windows: stay in the tray
+            background = true;
         } else if (a == L"--update") { // started by "Check for updates": install quietly, then run
             setup = Setup::Install;
             quiet = true;
@@ -782,6 +789,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
                    "                   [--scale PERCENT] [--speed 0-100] [--encoder auto|amf|nvenc|mf]\n"
                    "                   [--no-install]\n"
                    "       Tandem --install|--uninstall [--quiet]\n"
+                   "       Tandem --background   (start in the tray, as at sign-in)\n"
                    "Runs in the notification area; --console also shows the log in a console window.\n");
             return 1;
         }
@@ -814,8 +822,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     }
 
     HANDLE single = CreateMutexW(nullptr, TRUE, L"Local\\TandemHost");
-    installer::RemoveFreeDisplay(); // the previous name of this app; both would compete for the tablet
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    const bool alreadyRunning = GetLastError() == ERROR_ALREADY_EXISTS; // read before other calls reset it
+    if (alreadyRunning) {
         // Started again (Start menu, desktop): bring up the running copy's settings window.
         HWND tray = FindWindowW(L"TandemTray", nullptr);
         if (tray) {
@@ -829,6 +837,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         }
         return 0;
     }
+    installer::RemoveFreeDisplay(); // the previous name of this app; both would compete for the tablet
 
     // Keep the previous run's log next to the current one.
     // A previous instance that is still exiting may hold the file for a moment.
@@ -867,6 +876,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     };
     if (tray.Create(inst, cb)) g_tray = &tray;
     else Log("Notification-area icon unavailable");
+    // Opened by the user: show the window. Started with Windows: only the tray icon.
+    if (g_tray && !background) PostMessageW(FindWindowW(L"TandemTray", nullptr), kShowSettingsMsg, 0, 0);
+    // Installs from before --background existed: refresh the sign-in entry.
+    {
+        wchar_t self[MAX_PATH];
+        GetModuleFileNameW(nullptr, self, MAX_PATH);
+        if (AppSettings().startWithWindows && _wcsicmp(self, (installer::InstallDir() + L"Tandem.exe").c_str()) == 0)
+            Settings::ApplyStartWithWindows(true);
+    }
 
     std::thread worker(HostLoop, opt);
     if (g_tray) {

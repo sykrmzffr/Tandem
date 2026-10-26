@@ -67,7 +67,7 @@ void Settings::Load() {
     moveWindowsBack = ReadBool(L"MoveWindowsBack", true);
     restoreWindows = ReadBool(L"RestoreWindows", true);
     int restore = int(GetPrivateProfileIntW(kSection, L"RestoreScreenMode", -1, IniPath().c_str()));
-    restoreMode = (restore == 0 || restore == 1) ? restore : -1;
+    restoreMode = (restore == 0 || restore == 1 || restore == 3) ? restore : -1;
     int saver = GetPrivateProfileIntW(kSection, L"BatterySaver", kSaverOnBattery, IniPath().c_str());
     batterySaver = (saver >= kSaverOnBattery && saver <= kSaverOff) ? saver : kSaverOnBattery;
     int orient = GetPrivateProfileIntW(kSection, L"Orientation", 0, IniPath().c_str());
@@ -93,7 +93,7 @@ bool Settings::ApplyStartWithWindows(bool enable) {
     if (enable) {
         wchar_t exe[MAX_PATH];
         GetModuleFileNameW(nullptr, exe, MAX_PATH);
-        std::wstring cmd = L"\"" + std::wstring(exe) + L"\"";
+        std::wstring cmd = L"\"" + std::wstring(exe) + L"\" --background"; // stays in the tray at sign-in
         rc = RegSetValueExW(key, kRunValue, 0, REG_SZ, reinterpret_cast<const BYTE*>(cmd.c_str()),
                             DWORD((cmd.size() + 1) * sizeof(wchar_t)));
     } else {

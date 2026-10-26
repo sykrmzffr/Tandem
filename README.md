@@ -92,7 +92,9 @@ Some brands (e.g. Samsung) need their USB driver on Windows for USB debugging.
 
 ## Use
 
-Click the tray icon (or start Tandem again from the Start menu) for the
+Opening Tandem shows its settings window (when it starts with Windows it only
+puts its icon in the notification area). Click the tray icon (or start Tandem
+again from the Start menu) for the
 settings window; right-click it for the same options as a menu, plus **Quit**:
 
 - **Touch input / Pen input**: turn tablet input on or off (applies instantly).

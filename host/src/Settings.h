@@ -11,7 +11,7 @@ struct Settings {
     std::atomic<bool> startWithWindows{false};
     std::atomic<bool> moveWindowsBack{true}; // turn off the tablet screen (or move windows back) when it goes away
     std::atomic<bool> restoreWindows{true}; // put windows back on the tablet screen when it returns
-    std::atomic<int> restoreMode{-1}; // screen mode to restore when the tablet returns (0 extend, 1 duplicate)
+    std::atomic<int> restoreMode{-1}; // Win+P mode to restore (0 extend, 1 duplicate, 3 second screen only) // screen mode to restore when the tablet returns (0 extend, 1 duplicate)
     enum Saver : int { kSaverOnBattery = 0, kSaverAlways = 1, kSaverOff = 2 };
     std::atomic<int> batterySaver{kSaverOnBattery}; // 60 Hz instead of up to 120 Hz
     std::atomic<int> orientation{0}; // 0 follow the tablet, 1 landscape, 2 portrait (proto::Orientation)

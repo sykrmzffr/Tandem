@@ -9,8 +9,18 @@ All notable changes to Tandem (called FreeDisplay up to version 1.2.0). Versions
   release is out, Tandem downloads and installs it in one go, restarts, and
   keeps your settings. The tablet's waiting screen has a **Check for updates**
   button too.
+- Opening Tandem now shows its window; when it starts with Windows it stays
+  in the notification area as before.
 
 ### Fixed
+- Opening Tandem while it was already running started a second copy (since
+  1.3.0), and the two competed for the tablet. It now brings up the running
+  copy's window again.
+- With Win+P "Second screen only", unplugging the tablet could leave no screen
+  on at all. Tandem now switches back to the PC's screen, and restores "Second
+  screen only" when the tablet returns.
+- When the tablet was set as the main display, windows were not moved off it
+  on unplug. They now go to the largest remaining screen.
 - Some tablets stayed on the waiting screen because their video decoder
   rejected Tandem's low-latency settings (seen on a Huawei MatePad). Tandem now
   falls back to plain settings and to the tablet's other decoders, and if none

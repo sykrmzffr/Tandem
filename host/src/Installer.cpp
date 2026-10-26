@@ -325,7 +325,7 @@ bool Install(bool quiet, bool launch) {
 
     // Start with Windows by default; the tray menu can turn it off.
     if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
-        SetString(key, L"Tandem", L"\"" + exe + L"\"");
+        SetString(key, L"Tandem", L"\"" + exe + L"\" --background");
         RegCloseKey(key);
     }
     Settings& s = AppSettings();
