@@ -4,13 +4,18 @@
 #include "Installer.h"
 #include "Resources.h"
 #include "Settings.h"
+#include "Updater.h"
 #include "Util.h"
 #include "VirtualMonitor.h"
+#include <memory>
+#include <thread>
 #include <vector>
 
 namespace {
 constexpr UINT kTrayMsg = WM_APP + 1;    // icon clicks
 constexpr UINT kStatusMsg = WM_APP + 2;  // status changed on another thread
+constexpr UINT kUpdateCheckedMsg = WM_APP + 6;    // lParam: UpdateResult*
+constexpr UINT kUpdateDownloadedMsg = WM_APP + 7; // lParam: UpdateResult*
 constexpr UINT kIconId = 1;
 constexpr UINT_PTR kStatusTimer = 1;
 
@@ -34,6 +39,7 @@ enum MenuId : UINT {
     kIdOrientLandscape,
     kIdOrientPortrait,
     kIdLog,
+    kIdUpdates,
     kIdQuit,
 };
 
@@ -58,6 +64,7 @@ enum ControlId : int {
     kCtlOrientLabel,
     kCtlOrient,
     kCtlRestoreWindows,
+    kCtlUpdates,
 };
 
 constexpr int kQualityValues[] = {100, 75, 50};
@@ -82,6 +89,12 @@ void SetMode(int mode) {
     AppSettings().restoreMode = -1; // the user chose; nothing to restore later
     VirtualMonitor::SetTopology(mode == 1 ? 1 : 0);
 }
+
+struct UpdateResult {
+    bool ok = false;
+    updater::Release release;
+    std::wstring error, path;
+};
 
 void OpenLog() {
     ShellExecuteW(nullptr, L"open", (Settings::DataDir() + L"host.log").c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -239,6 +252,7 @@ void Tray::ShowMenu() {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | (s.startWithWindows ? MF_CHECKED : 0), kIdAutostart, L"Start with &Windows");
     AppendMenuW(menu, MF_STRING, kIdLog, L"Open &log");
+    AppendMenuW(menu, MF_STRING | (updateBusy_ ? MF_GRAYED : 0), kIdUpdates, L"Check for &updates...");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kIdRestart, L"&Restart Tandem");
     AppendMenuW(menu, MF_STRING, kIdQuit, L"&Quit Tandem");
@@ -274,6 +288,7 @@ void Tray::ShowMenu() {
         if (cb_.onRestart) cb_.onRestart();
         return;
     case kIdLog: OpenLog(); return;
+    case kIdUpdates: CheckForUpdates(); return;
     case kIdQuit:
         if (cb_.onQuit) cb_.onQuit();
         PostQuitMessage(0);
@@ -319,6 +334,7 @@ void Tray::ShowSettings() {
     add(L"BUTTON", L"&Move windows back to the tablet when it reconnects", BS_AUTOCHECKBOX | WS_TABSTOP,
         kCtlRestoreWindows);
     add(L"BUTTON", L"Start with &Windows", BS_AUTOCHECKBOX | WS_TABSTOP, kCtlAutostart);
+    add(L"BUTTON", L"Check for &updates", BS_PUSHBUTTON | WS_TABSTOP, kCtlUpdates);
     add(L"BUTTON", L"Open &log", BS_PUSHBUTTON | WS_TABSTOP, kCtlLog);
     add(L"BUTTON", L"&Restart app", BS_PUSHBUTTON | WS_TABSTOP, kCtlRestart);
     add(L"BUTTON", L"Close", BS_DEFPUSHBUTTON | WS_TABSTOP, IDCANCEL);
@@ -387,9 +403,10 @@ void Tray::LayoutSettings() {
         {kCtlMoveBack, margin, 388, inner, 22},
         {kCtlRestoreWindows, margin, 414, inner, 22},
         {kCtlAutostart, margin, 440, inner, 22},
-        {kCtlLog, margin, 482, 105, 30},
-        {kCtlRestart, margin + 117, 482, 106, 30},
-        {IDCANCEL, width - margin - 105, 482, 105, 30},
+        {kCtlUpdates, margin, 474, 160, 30},
+        {kCtlLog, margin, 516, 105, 30},
+        {kCtlRestart, margin + 117, 516, 106, 30},
+        {IDCANCEL, width - margin - 105, 516, 105, 30},
     };
     for (const Place& p : places) {
         HWND c = GetDlgItem(settings_, p.id);
@@ -397,7 +414,7 @@ void Tray::LayoutSettings() {
         SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(p.id == kCtlTitle ? titleFont_ : font_), TRUE);
     }
 
-    RECT rc{0, 0, px(width), px(530)};
+    RECT rc{0, 0, px(width), px(564)};
     AdjustWindowRectExForDpi(&rc, GetWindowLongW(settings_, GWL_STYLE), FALSE, 0, dpi);
     SetWindowPos(settings_, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -464,6 +481,7 @@ void Tray::OnSettingsCommand(int id, int code) {
         break;
     }
     case kCtlLog: OpenLog(); return;
+    case kCtlUpdates: CheckForUpdates(); return;
     case IDCANCEL: DestroyWindow(settings_); return;
     default: return;
     }
@@ -509,6 +527,85 @@ LRESULT CALLBACK Tray::SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+// ---- updates --------------------------------------------------------------
+
+void Tray::CheckForUpdates() {
+    if (updateBusy_.exchange(true)) return;
+    if (settings_) EnableWindow(GetDlgItem(settings_, kCtlUpdates), FALSE);
+    HWND hwnd = hwnd_;
+    std::thread([hwnd] {
+        auto* r = new UpdateResult;
+        r->ok = updater::Latest(r->release, r->error);
+        if (!PostMessageW(hwnd, kUpdateCheckedMsg, 0, reinterpret_cast<LPARAM>(r))) delete r;
+    }).detach();
+}
+
+void Tray::OnUpdateChecked(LPARAM lp) {
+    std::unique_ptr<UpdateResult> r(reinterpret_cast<UpdateResult*>(lp));
+    HWND owner = settings_;
+    auto done = [this] {
+        updateBusy_ = false;
+        if (settings_) EnableWindow(GetDlgItem(settings_, kCtlUpdates), TRUE);
+    };
+    const UINT flags = MB_SETFOREGROUND;
+    if (!r->ok) {
+        Log("Update check failed: %s", Narrow(r->error).c_str());
+        MessageBoxW(owner, (L"Could not check for updates: " + r->error + L".").c_str(), L"Tandem",
+                    flags | MB_ICONWARNING);
+        return done();
+    }
+    Log("Update check: latest is %s, this is " FD_VERSION_STR, Narrow(r->release.version).c_str());
+    if (!updater::IsNewer(r->release.version)) {
+        MessageBoxW(owner, L"You have the latest version of Tandem (" FD_VERSION_WSTR L").", L"Tandem",
+                    flags | MB_ICONINFORMATION);
+        return done();
+    }
+    std::wstring text = L"Tandem " + r->release.version + L" is available (you have " FD_VERSION_WSTR L").\n\n";
+    if (r->release.exeUrl.empty()) {
+        if (MessageBoxW(owner, (text + L"Open the download page?").c_str(), L"Tandem",
+                        flags | MB_YESNO | MB_ICONINFORMATION) == IDYES)
+            ShellExecuteW(nullptr, L"open", r->release.pageUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return done();
+    }
+    int choice = MessageBoxW(owner,
+                             (text + L"Download and install it now? Tandem restarts by itself and keeps your "
+                                     L"settings; the tablet app updates the next time it connects.\n\n"
+                                     L"Choose No to see what's new first.")
+                                 .c_str(),
+                             L"Tandem", flags | MB_YESNOCANCEL | MB_ICONQUESTION);
+    if (choice == IDNO && !r->release.pageUrl.empty())
+        ShellExecuteW(nullptr, L"open", r->release.pageUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if (choice != IDYES) return done();
+
+    SetStatus(L"Downloading Tandem " + r->release.version + L"...");
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    r->path = std::wstring(temp) + L"Tandem-" + r->release.version + L".exe";
+    HWND hwnd = hwnd_;
+    UpdateResult* job = r.release();
+    std::thread([hwnd, job] {
+        job->ok = updater::Download(job->release.exeUrl, job->path, job->error);
+        if (!PostMessageW(hwnd, kUpdateDownloadedMsg, 0, reinterpret_cast<LPARAM>(job))) delete job;
+    }).detach();
+}
+
+void Tray::OnUpdateDownloaded(LPARAM lp) {
+    std::unique_ptr<UpdateResult> r(reinterpret_cast<UpdateResult*>(lp));
+    updateBusy_ = false;
+    if (settings_) EnableWindow(GetDlgItem(settings_, kCtlUpdates), TRUE);
+    if (!r->ok) {
+        Log("Update download failed: %s", Narrow(r->error).c_str());
+        MessageBoxW(settings_, (L"Could not download the update: " + r->error + L".").c_str(), L"Tandem",
+                    MB_SETFOREGROUND | MB_ICONWARNING);
+        return;
+    }
+    // The new copy installs itself over this one (asking this copy to quit) and starts.
+    Log("Update: installing %s", Narrow(r->release.version).c_str());
+    if (reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", r->path.c_str(), L"--update", nullptr,
+                                                SW_SHOWNORMAL)) <= 32)
+        MessageBoxW(settings_, L"Could not start the downloaded update.", L"Tandem", MB_SETFOREGROUND | MB_ICONWARNING);
+}
+
 // ---- tray window ----------------------------------------------------------
 
 LRESULT CALLBACK Tray::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -528,6 +625,14 @@ LRESULT CALLBACK Tray::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (msg == WM_DISPLAYCHANGE) {
             if (self->settings_) self->RefreshSettings(); // e.g. Win+P changed the screen mode
             if (self->cb_.onDisplayChanged) self->cb_.onDisplayChanged();
+            return 0;
+        }
+        if (msg == kUpdateCheckedMsg) {
+            self->OnUpdateChecked(lp);
+            return 0;
+        }
+        if (msg == kUpdateDownloadedMsg) {
+            self->OnUpdateDownloaded(lp);
             return 0;
         }
         if (msg == kShowSettingsMsg) { // Tandem was started again (e.g. from the Start menu)

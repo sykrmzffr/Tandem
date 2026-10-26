@@ -2,8 +2,8 @@
 // Resource IDs shared by Tandem.rc and the code. Keep the version in sync
 // with VERSIONINFO in res/Tandem.rc and versionName in the Android app.
 
-#define FD_VERSION_STR "1.3.0"
-#define FD_VERSION_WSTR L"1.3.0"
+#define FD_VERSION_STR "1.3.1"
+#define FD_VERSION_WSTR L"1.3.1"
 
 #define IDI_APP 1
 

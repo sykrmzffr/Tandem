@@ -2,6 +2,21 @@
 
 All notable changes to Tandem (called FreeDisplay up to version 1.2.0). Versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-10-27
+
+### Added
+- **Check for updates** in the settings window and tray menu: if a newer
+  release is out, Tandem downloads and installs it in one go, restarts, and
+  keeps your settings. The tablet's waiting screen has a **Check for updates**
+  button too.
+
+### Fixed
+- Some tablets stayed on the waiting screen because their video decoder
+  rejected Tandem's low-latency settings (seen on a Huawei MatePad). Tandem now
+  falls back to plain settings and to the tablet's other decoders, and if none
+  works, the tablet shows why instead of waiting forever.
+- The stream size is now a multiple of 16 pixels, which some decoders require.
+
 ## [1.3.0] - 2026-10-17
 
 ### Changed
@@ -99,6 +114,7 @@ First release.
   rights, starts with Windows, installs and updates the tablet app by itself.
 - Tray menu: touch and pen switches, video quality presets, start with Windows.
 
+[1.3.1]: https://github.com/sykrmzffr/Tandem/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/sykrmzffr/Tandem/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/sykrmzffr/Tandem/compare/v1.1.2...v1.2.0
 [1.1.2]: https://github.com/sykrmzffr/Tandem/compare/v1.1.1...v1.1.2

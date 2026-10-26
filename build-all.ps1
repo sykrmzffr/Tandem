@@ -4,10 +4,10 @@
 $ErrorActionPreference = "Continue" # native tools write warnings to stderr; exit codes are checked
 $root = $PSScriptRoot
 
-if (-not $env:JAVA_HOME) {
-    $jbr = "$env:ProgramFiles\Android\Android Studio\jbr"
-    if (Test-Path $jbr) { $env:JAVA_HOME = $jbr }
-}
+# Prefer Android Studio's bundled JDK (for this build only): Gradle may not support
+# a newer JDK that JAVA_HOME points to (it failed with JDK 25).
+$jbr = "$env:ProgramFiles\Android\Android Studio\jbr"
+if (Test-Path $jbr) { $env:JAVA_HOME = $jbr }
 $gradle = Get-Command gradle -ErrorAction SilentlyContinue
 $gradle = if ($gradle) { $gradle.Source } else {
     # Fall back to a Gradle distribution already downloaded by Android Studio.

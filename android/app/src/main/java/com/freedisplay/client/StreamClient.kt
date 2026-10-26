@@ -112,6 +112,11 @@ class StreamClient(
             onStarted = { info ->
                 send(Protocol.message(Protocol.DECODER_INFO) { write(info.toByteArray(Charsets.UTF_8)) })
             },
+            onFailed = { reason ->
+                send(Protocol.message(Protocol.DECODER_INFO) { write("FAILED: $reason".toByteArray(Charsets.UTF_8)) })
+                listener.onStatus("Tandem\n\nThis tablet's video decoder did not start, so the screen can't be " +
+                    "shown.\n\n$reason")
+            },
             onDecoded = { pts, decodeUs, waitUs ->
                 send(Protocol.message(Protocol.FRAME_STATS) { writeLong(pts); writeInt(decodeUs); writeInt(waitUs) })
             },

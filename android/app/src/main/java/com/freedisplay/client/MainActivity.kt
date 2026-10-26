@@ -1,6 +1,9 @@
 package com.freedisplay.client
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.Intent
+import android.net.Uri
 import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.os.Build
@@ -14,8 +17,10 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.widget.Toast
 import kotlin.math.atan
 import kotlin.math.cos
 import kotlin.math.min
@@ -29,6 +34,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, StreamClient.Listener {
     private lateinit var root: FrameLayout
     private lateinit var surfaceView: SurfaceView
     private lateinit var status: TextView
+    private lateinit var updateButton: Button
     private var client: StreamClient? = null
     private var videoW = 0
     private var videoH = 0
@@ -62,6 +68,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback, StreamClient.Listener {
         }
         root.addView(surfaceView, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
         root.addView(status, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
+        // On the waiting screen only. The PC also updates this app whenever Tandem on
+        // Windows is updated; this covers installs by hand.
+        updateButton = Button(this).apply {
+            text = "Check for updates"
+            isAllCaps = false
+            setOnClickListener { checkForUpdates() }
+        }
+        root.addView(updateButton, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            bottomMargin = (32 * resources.displayMetrics.density).toInt()
+        })
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitVideo() }
         setContentView(root)
 
@@ -223,6 +239,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, StreamClient.Listener {
     override fun onStatus(text: String) = runOnUiThread {
         status.text = text
         status.visibility = View.VISIBLE
+        updateButton.visibility = View.VISIBLE
     }
 
     override fun onVideoSize(width: Int, height: Int, fps: Int) = runOnUiThread {
@@ -239,7 +256,46 @@ class MainActivity : Activity(), SurfaceHolder.Callback, StreamClient.Listener {
         }
     }
 
-    override fun onStreaming() = runOnUiThread { status.visibility = View.GONE }
+    override fun onStreaming() = runOnUiThread {
+        status.visibility = View.GONE
+        updateButton.visibility = View.GONE
+    }
+
+    private fun checkForUpdates() {
+        updateButton.isEnabled = false
+        @Suppress("DEPRECATION")
+        val current = packageManager.getPackageInfo(packageName, 0).versionName ?: "0"
+        Thread {
+            val result = runCatching { UpdateCheck.latest() }
+            runOnUiThread {
+                updateButton.isEnabled = true
+                val release = result.getOrElse { e ->
+                    Toast.makeText(this, "Could not check for updates: ${e.message}", Toast.LENGTH_LONG).show()
+                    return@runOnUiThread
+                }
+                if (!UpdateCheck.isNewer(release.version, current)) {
+                    Toast.makeText(this, "You have the latest version ($current)", Toast.LENGTH_LONG).show()
+                    return@runOnUiThread
+                }
+                AlertDialog.Builder(this)
+                    .setTitle("Tandem ${release.version} is available")
+                    .setMessage("You have $current. Updating Tandem on your PC also updates this app the next " +
+                        "time the tablet connects. You can also download it here and install it.")
+                    .setPositiveButton("Download") { _, _ -> open(release.apkUrl ?: release.pageUrl) }
+                    .setNeutralButton("What's new") { _, _ -> open(release.pageUrl) }
+                    .setNegativeButton("Later", null)
+                    .show()
+            }
+        }.start()
+    }
+
+    private fun open(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (e: Exception) {
+            Toast.makeText(this, "No browser to open $url", Toast.LENGTH_LONG).show()
+        }
+    }
 
     override fun onOrientation(orientation: Int) = runOnUiThread {
         getPreferences(MODE_PRIVATE).edit().putInt(PREF_ORIENTATION, orientation).apply()

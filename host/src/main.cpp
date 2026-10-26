@@ -32,7 +32,7 @@ namespace {
 
 constexpr const wchar_t* kPackage = L"com.freedisplay.client";
 constexpr const wchar_t* kActivity = L"com.freedisplay.client/.MainActivity";
-constexpr int kAppVersionCode = 13; // keep in sync with android/app/build.gradle.kts
+constexpr int kAppVersionCode = 14; // keep in sync with android/app/build.gradle.kts
 
 struct Options {
     int display = -1;     // -1: auto (VDD monitor, else primary)
@@ -285,13 +285,14 @@ void RunSession(SOCKET sock, const Options& opt, const std::function<bool()>& st
     }
 
     int scalePct = opt.scalePct > 0 ? opt.scalePct : AppSettings().qualityPct.load();
-    UINT w = UINT((output.desktop.right - output.desktop.left) * scalePct / 100) & ~1u;
-    UINT h = UINT((output.desktop.bottom - output.desktop.top) * scalePct / 100) & ~1u;
+    // Multiples of 16 (whole macroblocks): some tablet decoders reject other sizes.
+    UINT w = UINT((output.desktop.right - output.desktop.left) * scalePct / 100) & ~15u;
+    UINT h = UINT((output.desktop.bottom - output.desktop.top) * scalePct / 100) & ~15u;
     // Stay within what the tablet's decoder accepts (some stop at 4096x2176).
     if (maxDecW && maxDecH && (w > maxDecW || h > maxDecH)) {
         double f = std::min(double(maxDecW) / w, double(maxDecH) / h);
-        w = UINT(w * f) & ~1u;
-        h = UINT(h * f) & ~1u;
+        w = UINT(w * f) & ~15u;
+        h = UINT(h * f) & ~15u;
     }
     // Budget per frame stays the same at any rate: at 120 Hz with a 60 Hz budget each
     // frame got half the bits, and text went soft whenever the screen changed.
@@ -340,6 +341,8 @@ void RunSession(SOCKET sock, const Options& opt, const std::function<bool()>& st
 
     std::atomic<bool> alive{true};
     std::atomic<bool> keyRequested{true};
+    std::atomic<bool> decoderReported{false}; // the tablet said whether its decoder started
+    bool decoderHintLogged = false;
     std::atomic<uint64_t> lastHeard{NowUs()}; // the tablet answers pings every 500 ms
     std::thread reader([&] {
         uint8_t t;
@@ -379,6 +382,7 @@ void RunSession(SOCKET sock, const Options& opt, const std::function<bool()>& st
                 totals.pings++;
                 totals.rtt += NowUs() - sentAt;
             } else if (t == proto::kDecoderInfo) {
+                decoderReported = true;
                 Log("Tablet decoder: %.*s", int(p.size()), reinterpret_cast<const char*>(p.data()));
             }
         }
@@ -499,6 +503,10 @@ void RunSession(SOCKET sock, const Options& opt, const std::function<bool()>& st
             pending = false;
         } else if (pending) {
             Sleep(1);
+        }
+        if (!decoderReported && !decoderHintLogged && now - start > 10000000) {
+            decoderHintLogged = true;
+            Log("The tablet has not started its video decoder after 10 s (its log: adb logcat -s Tandem)");
         }
         if (now - statsAt > 5000000) {
             std::lock_guard<std::mutex> lock(timingMu);
@@ -719,6 +727,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     bool console = false;
     enum class Setup { None, Install, Uninstall } setup = Setup::None;
     bool quiet = false;
+    bool updating = false;
     for (int i = 1; i < argc; i++) {
         std::wstring a = argv[i];
         auto next = [&] { return i + 1 < argc ? _wtoi(argv[++i]) : 0; };
@@ -744,6 +753,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
             opt.install = false;
         } else if (a == L"--install") {
             setup = Setup::Install;
+        } else if (a == L"--update") { // started by "Check for updates": install quietly, then run
+            setup = Setup::Install;
+            quiet = true;
+            updating = true;
         } else if (a == L"--uninstall") {
             setup = Setup::Uninstall;
         } else if (a == L"--quiet") {
@@ -775,7 +788,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     }
     LocalFree(argv);
 
-    if (setup == Setup::Install) return installer::Install(quiet, !quiet) ? 0 : 1;
+    if (setup == Setup::Install) return installer::Install(quiet, !quiet || updating) ? 0 : 1;
     if (setup == Setup::Uninstall) return installer::Uninstall(quiet) ? 0 : 1;
     if (!installer::RunningInPlace() && !console && !stdoutRedirected) {
         // Started from a download: offer to install, or just run from a cache.

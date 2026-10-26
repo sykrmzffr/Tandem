@@ -4,9 +4,7 @@ Use an Android tablet as a second monitor for Windows over a USB cable, with
 touch and pen input. Free and built from our own code. (Formerly called
 FreeDisplay; installing Tandem replaces it and keeps your settings.)
 
-Tandem is a vibe-coded project: it was built through AI-assisted
-development, and every feature was tested on real hardware (an AMD laptop and a
-Xiaomi tablet). See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## How it works
 
@@ -124,6 +122,10 @@ settings window; right-click it for the same options as a menu, plus **Quit**:
 - **Screen mode**: Extend (tablet is a second screen) or Duplicate (mirror),
   the same as Win+P; the stream follows within a second or two, also when you
   use Win+P.
+- **Check for updates**: looks for a newer release on GitHub and, if there is
+  one, downloads and installs it (Tandem restarts and keeps your settings; the
+  tablet app updates the next time it connects). The tablet's waiting screen
+  has a **Check for updates** button too.
 - **Start with Windows**, **Open log**, **Restart app**.
 
 `Tandem.exe --move-windows-back` does the window move by hand.

@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <atomic>
 #include <functional>
 #include <string>
 
@@ -41,6 +42,13 @@ private:
     void LayoutSettings();
     void RefreshSettings(); // controls <- settings
     void OnSettingsCommand(int id, int code);
+
+    // Check for updates: asks GitHub on a worker thread, then offers to download
+    // and install a newer release (the new Tandem.exe replaces this copy).
+    void CheckForUpdates();
+    void OnUpdateChecked(LPARAM result);
+    void OnUpdateDownloaded(LPARAM result);
+    std::atomic<bool> updateBusy_{false};
 
     HWND hwnd_ = nullptr;
     HWND settings_ = nullptr;
