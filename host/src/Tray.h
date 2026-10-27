@@ -43,6 +43,13 @@ private:
     void RefreshSettings(); // controls <- settings
     void OnSettingsCommand(int id, int code);
 
+    // Display driver line and its fix button (install, Device Manager, restart).
+    void RefreshDriver();
+    void FixDriver();
+    bool driverOk_ = true;
+    int driverFix_ = 0;
+    unsigned timerTicks_ = 0;
+
     // Check for updates: asks GitHub on a worker thread, then offers to download
     // and install a newer release (the new Tandem.exe replaces this copy).
     void CheckForUpdates();

@@ -96,6 +96,20 @@ POINT WorkspaceOffset() {
     return {pmi.rcWork.left - pmi.rcMonitor.left, pmi.rcWork.top - pmi.rcMonitor.top};
 }
 
+// Windows placed on a monitor with other scaling rescale themselves once there
+// (WM_DPICHANGED), e.g. 2.5x bigger going from a 100% screen to a 250% tablet.
+// Placing the normal (not minimized or maximized) ones again keeps the size meant.
+void Settle(const std::vector<std::pair<HWND, WINDOWPLACEMENT>>& placed) {
+    if (placed.empty()) return;
+    Sleep(200); // the apps handle the change on their own threads
+    for (const auto& [w, wp] : placed) {
+        WINDOWPLACEMENT now{sizeof now};
+        if (wp.showCmd == SW_SHOWNOACTIVATE && !IsIconic(w) && !IsZoomed(w) && GetWindowPlacement(w, &now) &&
+            !EqualRect(&now.rcNormalPosition, &wp.rcNormalPosition))
+            SetWindowPlacement(w, &wp);
+    }
+}
+
 // Where windows go when the tablet's screen goes away: the main display, or when the
 // tablet itself is the main display, the largest other screen.
 bool MainMonitor(HMONITOR exclude, MONITORINFO& mi) {
@@ -147,6 +161,40 @@ bool CountActive(int& builtIn, int& vdd, int& other) {
         }
     }
     return true;
+}
+
+bool IsVddTarget(const DISPLAYCONFIG_PATH_INFO& path) {
+    DISPLAYCONFIG_TARGET_DEVICE_NAME name{};
+    name.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+    name.header.size = sizeof name;
+    name.header.adapterId = path.targetInfo.adapterId;
+    name.header.id = path.targetInfo.id;
+    return DisplayConfigGetDeviceInfo(&name.header) == ERROR_SUCCESS &&
+           wcsstr(name.monitorFriendlyDeviceName, L"VDD") != nullptr;
+}
+
+// Every possible source-target path (the active ones included) and the modes they use.
+bool QueryAllPaths(std::vector<DISPLAYCONFIG_PATH_INFO>& p, std::vector<DISPLAYCONFIG_MODE_INFO>& m) {
+    UINT32 paths = 0, modes = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ALL_PATHS, &paths, &modes) != ERROR_SUCCESS) return false;
+    p.resize(paths);
+    m.resize(modes);
+    if (QueryDisplayConfig(QDC_ALL_PATHS, &paths, p.data(), &modes, m.data(), nullptr) != ERROR_SUCCESS) return false;
+    p.resize(paths);
+    m.resize(modes);
+    return true;
+}
+
+// The VDD monitor's last place and mode on the desktop (see SetScreen). Its place
+// is also kept in the registry for the next start of Tandem.
+std::mutex g_vddModeMu;
+DISPLAYCONFIG_MODE_INFO g_vddSource{}, g_vddTarget{};
+constexpr const wchar_t* kStateKey = L"Software\\Tandem";
+constexpr const wchar_t* kScreenValue = L"TabletScreenPlace";
+
+bool SameSource(const DISPLAYCONFIG_PATH_INFO& a, const DISPLAYCONFIG_PATH_INFO& b) {
+    return a.sourceInfo.adapterId.LowPart == b.sourceInfo.adapterId.LowPart &&
+           a.sourceInfo.adapterId.HighPart == b.sourceInfo.adapterId.HighPart && a.sourceInfo.id == b.sourceInfo.id;
 }
 
 bool FindDevice(DISPLAY_DEVICEW& out) {
@@ -268,6 +316,110 @@ bool OnlyVddActive() {
     return CountActive(builtIn, vdd, other) && vdd > 0 && builtIn == 0 && other == 0;
 }
 
+int ScreenState() {
+    std::vector<DISPLAYCONFIG_PATH_INFO> p;
+    std::vector<DISPLAYCONFIG_MODE_INFO> m;
+    if (!QueryAllPaths(p, m)) return 0;
+    int state = 0;
+    for (const auto& path : p) {
+        if (!path.targetInfo.targetAvailable || !IsVddTarget(path)) continue;
+        if (path.flags & DISPLAYCONFIG_PATH_ACTIVE) return 2;
+        state = 1;
+    }
+    return state;
+}
+
+bool SetScreen(bool on) {
+    std::vector<DISPLAYCONFIG_PATH_INFO> all;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    if (!QueryAllPaths(all, modes)) return false;
+    // The other screens keep their current modes. (Letting Windows take this set of
+    // screens' setup from its database brought back an old resolution of the
+    // laptop's own screen in testing.)
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> used;
+    std::vector<UINT32> newIndex(modes.size(), DISPLAYCONFIG_PATH_MODE_IDX_INVALID);
+    auto keepMode = [&](UINT32& idx) {
+        if (idx >= modes.size()) {
+            idx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            return;
+        }
+        if (newIndex[idx] == DISPLAYCONFIG_PATH_MODE_IDX_INVALID) {
+            newIndex[idx] = UINT32(used.size());
+            used.push_back(modes[idx]);
+        }
+        idx = newIndex[idx];
+    };
+    bool vddActive = false;
+    for (const auto& path : all) {
+        if (!(path.flags & DISPLAYCONFIG_PATH_ACTIVE)) continue;
+        if (IsVddTarget(path)) {
+            vddActive = true;
+            // Mirroring another screen (Duplicate, or some "Second screen only" setups):
+            // it shows nothing of its own, so it is left as Windows set it up.
+            if (std::any_of(all.begin(), all.end(), [&](const DISPLAYCONFIG_PATH_INFO& other) {
+                    return &other != &path && (other.flags & DISPLAYCONFIG_PATH_ACTIVE) && SameSource(other, path);
+                }))
+                return on;
+            // Remember its place and mode for turning it back on.
+            std::lock_guard<std::mutex> lock(g_vddModeMu);
+            g_vddSource = path.sourceInfo.modeInfoIdx < modes.size() ? modes[path.sourceInfo.modeInfoIdx] : DISPLAYCONFIG_MODE_INFO{};
+            g_vddTarget = path.targetInfo.modeInfoIdx < modes.size() ? modes[path.targetInfo.modeInfoIdx] : DISPLAYCONFIG_MODE_INFO{};
+            if (g_vddSource.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE)
+                RegSetKeyValueW(HKEY_CURRENT_USER, kStateKey, kScreenValue, REG_BINARY, &g_vddSource, sizeof g_vddSource);
+            if (!on) continue;
+        }
+        paths.push_back(path);
+        keepMode(paths.back().sourceInfo.modeInfoIdx);
+        keepMode(paths.back().targetInfo.modeInfoIdx);
+    }
+    if (vddActive == on) return true;
+    const size_t otherModes = used.size();
+    if (on) { // a path to the VDD monitor from a source nothing else uses
+        auto it = std::find_if(all.begin(), all.end(), [&](const DISPLAYCONFIG_PATH_INFO& path) {
+            return !(path.flags & DISPLAYCONFIG_PATH_ACTIVE) && path.targetInfo.targetAvailable && IsVddTarget(path) &&
+                   std::none_of(paths.begin(), paths.end(),
+                                [&](const DISPLAYCONFIG_PATH_INFO& a) { return SameSource(a, path); });
+        });
+        if (it == all.end()) return false;
+        DISPLAYCONFIG_PATH_INFO add = *it;
+        add.flags |= DISPLAYCONFIG_PATH_ACTIVE;
+        add.sourceInfo.modeInfoIdx = add.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+        // Back where it was, when its mode is known (else Windows places it).
+        std::lock_guard<std::mutex> lock(g_vddModeMu);
+        DWORD size = sizeof g_vddSource;
+        if (g_vddSource.infoType != DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE &&
+            RegGetValueW(HKEY_CURRENT_USER, kStateKey, kScreenValue, RRF_RT_REG_BINARY, nullptr, &g_vddSource, &size) !=
+                ERROR_SUCCESS)
+            g_vddSource = {};
+        if (g_vddSource.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE) {
+            DISPLAYCONFIG_MODE_INFO m = g_vddSource;
+            m.id = add.sourceInfo.id;
+            m.adapterId = add.sourceInfo.adapterId;
+            add.sourceInfo.modeInfoIdx = UINT32(used.size());
+            used.push_back(m);
+            if (g_vddTarget.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_TARGET && g_vddTarget.id == add.targetInfo.id) {
+                add.targetInfo.modeInfoIdx = UINT32(used.size());
+                used.push_back(g_vddTarget);
+            }
+        }
+        paths.push_back(add);
+    }
+    if (paths.empty()) return false;
+    LONG rc = SetDisplayConfig(UINT32(paths.size()), paths.data(), UINT32(used.size()), used.data(),
+                               SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
+    if (rc != ERROR_SUCCESS && on && paths.back().sourceInfo.modeInfoIdx != DISPLAYCONFIG_PATH_MODE_IDX_INVALID) {
+        // Its old place no longer fits (screens rearranged): let Windows place it.
+        Log("Tablet screen on at its last place failed (%ld)", rc);
+        paths.back().sourceInfo.modeInfoIdx = paths.back().targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+        used.resize(otherModes);
+        rc = SetDisplayConfig(UINT32(paths.size()), paths.data(), UINT32(used.size()), used.data(),
+                              SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
+    }
+    Log("Tablet screen %s: %s (%ld)", on ? "on" : "off", rc == ERROR_SUCCESS ? "ok" : "failed", rc);
+    return rc == ERROR_SUCCESS;
+}
+
 bool Bounds(RECT& out) {
     std::wstring name = Find();
     if (name.empty()) return false;
@@ -331,7 +483,12 @@ int MoveWindowsToPrimary() {
         std::lock_guard<std::mutex> lock(g_movedMu);
         g_moved.clear(); // a new disconnect: remember this batch
     }
-    int moved = 0;
+    struct Move {
+        RECT normal;
+        bool maximized, minimized;
+    };
+    std::vector<std::pair<HWND, WINDOWPLACEMENT>> placed;
+    std::vector<Move> moves;
     for (HWND w : windows) {
         if (!IsMovableWindow(w)) continue;
         WINDOWPLACEMENT wp{sizeof wp};
@@ -352,13 +509,17 @@ int MoveWindowsToPrimary() {
         // so restore it onto the main screen first and maximize it there.
         wp.showCmd = minimized ? SW_SHOWMINNOACTIVE : SW_SHOWNOACTIVATE;
         if (!SetWindowPlacement(w, &wp)) continue; // fails for elevated windows; those stay put
+        placed.push_back({w, wp});
         if (maximized) {
             wp.showCmd = SW_SHOWMAXIMIZED;
             SetWindowPlacement(w, &wp);
         }
-        Remember(w, normal, vdd.work, maximized, minimized);
-        moved++;
+        moves.push_back({normal, maximized, minimized});
     }
+    Settle(placed);
+    for (size_t i = 0; i < placed.size(); i++) // after Settle: notes where each one ended up
+        Remember(placed[i].first, moves[i].normal, vdd.work, moves[i].maximized, moves[i].minimized);
+    int moved = int(placed.size());
 
     POINT cursor;
     if (GetCursorPos(&cursor) && MonitorFromPoint(cursor, MONITOR_DEFAULTTONULL) == vdd.handle)
@@ -377,7 +538,7 @@ int RestoreWindows(bool apply) {
     if (!apply || moved.empty() || name.empty() || !FindMonitor(name, vdd)) return 0;
     POINT ws = WorkspaceOffset();
 
-    int restored = 0;
+    std::vector<std::pair<HWND, WINDOWPLACEMENT>> placed;
     for (const MovedWindow& m : moved) {
         DWORD pid = 0;
         if (!IsWindow(m.hwnd) || !GetWindowThreadProcessId(m.hwnd, &pid) || pid != m.pid) continue; // closed
@@ -401,13 +562,14 @@ int RestoreWindows(bool apply) {
         // restored onto the new one first.
         wp.showCmd = minimized ? SW_SHOWMINNOACTIVE : SW_SHOWNOACTIVATE;
         if (!SetWindowPlacement(m.hwnd, &wp)) continue;
+        placed.push_back({m.hwnd, wp});
         if (maximized) {
             wp.showCmd = SW_SHOWMAXIMIZED;
             SetWindowPlacement(m.hwnd, &wp);
         }
-        restored++;
     }
-    return restored;
+    Settle(placed);
+    return int(placed.size());
 }
 
 } // namespace VirtualMonitor

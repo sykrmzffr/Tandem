@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <string>
 #include <utility>
 
 // Installs and removes the Virtual Display Driver (MttVDD), which provides the
@@ -14,6 +15,24 @@ namespace driver {
 
 // True when a VDD device exists (installed by us or by its own installer).
 bool Present();
+
+// The VDD device as Device Manager shows it.
+enum class State { Missing, Disabled, Failed, Running };
+
+// Whether the driver can give the tablet its own screen, and what to do if not.
+struct Health {
+    State state = State::Missing;
+    ULONG problem = 0;           // Device Manager problem code when Disabled or Failed
+    bool restartPending = false; // installed or turned on since Windows started
+    int screen = 0;              // VirtualMonitor::ScreenState()
+    // Ready (the screen itself may be off the desktop until a tablet connects).
+    bool Ok() const { return state == State::Running && !restartPending && screen > 0; }
+    std::wstring Summary() const; // one line for the settings window and the log
+    std::wstring Advice() const;  // what the user should do; empty when Ok()
+};
+
+// Checks the device and its monitor (a few milliseconds).
+Health CheckHealth();
 
 // True when Tandem installed the driver and Windows has not restarted since.
 bool RestartPending();

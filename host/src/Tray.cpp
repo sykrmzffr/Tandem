@@ -1,6 +1,7 @@
 #include "Tray.h"
 #include <shellapi.h>
 #include <commctrl.h>
+#include "Driver.h"
 #include "Installer.h"
 #include "Resources.h"
 #include "Settings.h"
@@ -65,6 +66,8 @@ enum ControlId : int {
     kCtlOrient,
     kCtlRestoreWindows,
     kCtlUpdates,
+    kCtlDriver,
+    kCtlDriverFix,
 };
 
 constexpr int kQualityValues[] = {100, 75, 50};
@@ -88,6 +91,8 @@ int CurrentMode() {
 void SetMode(int mode) {
     AppSettings().restoreMode = -1; // the user chose; nothing to restore later
     VirtualMonitor::SetTopology(mode == 1 ? 1 : 0);
+    // Extend can leave out a screen that was turned off on its own.
+    if (mode == 0 && VirtualMonitor::ScreenState() == 1) VirtualMonitor::SetScreen(true);
 }
 
 struct UpdateResult {
@@ -318,6 +323,7 @@ void Tray::ShowSettings() {
     add(L"STATIC", L"Tandem", SS_LEFT, kCtlTitle);
     add(L"STATIC", L"Version " FD_VERSION_WSTR, SS_RIGHT, kCtlVersion);
     add(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, kCtlStatus);
+    add(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, kCtlDriver);
     add(L"STATIC", L"Tablet input", SS_LEFT, kCtlInputLabel);
     add(L"BUTTON", L"&Touch", BS_AUTOCHECKBOX | WS_TABSTOP, kCtlTouch);
     add(L"BUTTON", L"&Pen", BS_AUTOCHECKBOX | WS_TABSTOP, kCtlPen);
@@ -335,6 +341,7 @@ void Tray::ShowSettings() {
         kCtlRestoreWindows);
     add(L"BUTTON", L"Start with &Windows", BS_AUTOCHECKBOX | WS_TABSTOP, kCtlAutostart);
     add(L"BUTTON", L"Check for &updates", BS_PUSHBUTTON | WS_TABSTOP, kCtlUpdates);
+    add(L"BUTTON", L"", BS_PUSHBUTTON | WS_TABSTOP, kCtlDriverFix);
     add(L"BUTTON", L"Open &log", BS_PUSHBUTTON | WS_TABSTOP, kCtlLog);
     add(L"BUTTON", L"&Restart app", BS_PUSHBUTTON | WS_TABSTOP, kCtlRestart);
     add(L"BUTTON", L"Close", BS_DEFPUSHBUTTON | WS_TABSTOP, IDCANCEL);
@@ -350,6 +357,7 @@ void Tray::ShowSettings() {
     LayoutSettings();
     RefreshSettings();
     SetDlgItemTextW(settings_, kCtlStatus, CurrentStatus().c_str());
+    RefreshDriver();
 
     // Center on the monitor the pointer is on.
     RECT wr;
@@ -389,24 +397,26 @@ void Tray::LayoutSettings() {
         {kCtlTitle, margin, 16, 200, 28},
         {kCtlVersion, width - margin - 120, 24, 120, 20},
         {kCtlStatus, margin, 50, inner, 36},
-        {kCtlInputLabel, margin, 96, inner, 20},
-        {kCtlTouch, margin, 118, 120, 22},
-        {kCtlPen, margin + 130, 118, 120, 22},
-        {kCtlQualityLabel, margin, 152, inner, 20},
-        {kCtlQuality, margin, 174, inner, 200},
-        {kCtlSaverLabel, margin, 210, inner, 20},
-        {kCtlSaver, margin, 232, inner, 200},
-        {kCtlModeLabel, margin, 268, inner, 20},
-        {kCtlMode, margin, 290, inner, 200},
-        {kCtlOrientLabel, margin, 326, inner, 20},
-        {kCtlOrient, margin, 348, inner, 200},
-        {kCtlMoveBack, margin, 388, inner, 22},
-        {kCtlRestoreWindows, margin, 414, inner, 22},
-        {kCtlAutostart, margin, 440, inner, 22},
-        {kCtlUpdates, margin, 474, 160, 30},
-        {kCtlLog, margin, 516, 105, 30},
-        {kCtlRestart, margin + 117, 516, 106, 30},
-        {IDCANCEL, width - margin - 105, 516, 105, 30},
+        {kCtlDriver, margin, 88, inner, 36},
+        {kCtlInputLabel, margin, 132, inner, 20},
+        {kCtlTouch, margin, 154, 120, 22},
+        {kCtlPen, margin + 130, 154, 120, 22},
+        {kCtlQualityLabel, margin, 188, inner, 20},
+        {kCtlQuality, margin, 210, inner, 200},
+        {kCtlSaverLabel, margin, 246, inner, 20},
+        {kCtlSaver, margin, 268, inner, 200},
+        {kCtlModeLabel, margin, 304, inner, 20},
+        {kCtlMode, margin, 326, inner, 200},
+        {kCtlOrientLabel, margin, 362, inner, 20},
+        {kCtlOrient, margin, 384, inner, 200},
+        {kCtlMoveBack, margin, 424, inner, 22},
+        {kCtlRestoreWindows, margin, 450, inner, 22},
+        {kCtlAutostart, margin, 476, inner, 22},
+        {kCtlUpdates, margin, 510, 160, 30},
+        {kCtlDriverFix, margin + 172, 510, inner - 172, 30},
+        {kCtlLog, margin, 552, 105, 30},
+        {kCtlRestart, margin + 117, 552, 106, 30},
+        {IDCANCEL, width - margin - 105, 552, 105, 30},
     };
     for (const Place& p : places) {
         HWND c = GetDlgItem(settings_, p.id);
@@ -414,7 +424,7 @@ void Tray::LayoutSettings() {
         SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(p.id == kCtlTitle ? titleFont_ : font_), TRUE);
     }
 
-    RECT rc{0, 0, px(width), px(564)};
+    RECT rc{0, 0, px(width), px(600)};
     AdjustWindowRectExForDpi(&rc, GetWindowLongW(settings_, GWL_STYLE), FALSE, 0, dpi);
     SetWindowPos(settings_, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -482,6 +492,7 @@ void Tray::OnSettingsCommand(int id, int code) {
     }
     case kCtlLog: OpenLog(); return;
     case kCtlUpdates: CheckForUpdates(); return;
+    case kCtlDriverFix: FixDriver(); return;
     case IDCANCEL: DestroyWindow(settings_); return;
     default: return;
     }
@@ -503,11 +514,14 @@ LRESULT CALLBACK Tray::SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         HDC dc = reinterpret_cast<HDC>(wp);
         SetBkMode(dc, TRANSPARENT);
         int id = GetDlgCtrlID(reinterpret_cast<HWND>(lp));
-        SetTextColor(dc, GetSysColor(id == kCtlStatus || id == kCtlVersion ? COLOR_GRAYTEXT : COLOR_WINDOWTEXT));
+        COLORREF color = GetSysColor(id == kCtlStatus || id == kCtlVersion ? COLOR_GRAYTEXT : COLOR_WINDOWTEXT);
+        if (id == kCtlDriver) color = self->driverOk_ ? GetSysColor(COLOR_GRAYTEXT) : RGB(196, 43, 28);
+        SetTextColor(dc, color);
         return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
     }
     case WM_TIMER:
         SetDlgItemTextW(hwnd, kCtlStatus, self->CurrentStatus().c_str());
+        if (++self->timerTicks_ % 3 == 0) self->RefreshDriver();
         return 0;
     case WM_DPICHANGED: {
         auto* r = reinterpret_cast<RECT*>(lp);
@@ -525,6 +539,50 @@ LRESULT CALLBACK Tray::SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// Shows the display driver's state, with a button when the user can fix it.
+void Tray::RefreshDriver() {
+    if (!settings_) return;
+    driver::Health h = driver::CheckHealth();
+    driverOk_ = h.Ok();
+    std::wstring text = h.Summary();
+    if (!h.Ok()) text += L". " + h.Advice() + L".";
+    wchar_t old[512] = {};
+    GetDlgItemTextW(settings_, kCtlDriver, old, 512);
+    if (text != old) SetDlgItemTextW(settings_, kCtlDriver, text.c_str());
+    driverFix_ = h.restartPending                   ? 1  // restart now
+                 : h.state == driver::State::Missing ? 2 // install
+                 : !h.Ok()                           ? 3 // Device Manager
+                                                     : 0;
+    static const wchar_t* labels[] = {L"", L"Restart PC", L"&Install display driver", L"Open &Device Manager"};
+    HWND button = GetDlgItem(settings_, kCtlDriverFix);
+    SetWindowTextW(button, labels[driverFix_]);
+    ShowWindow(button, driverFix_ ? SW_SHOW : SW_HIDE);
+}
+
+void Tray::FixDriver() {
+    switch (driverFix_) {
+    case 1:
+        if (MessageBoxW(settings_, L"Restart your PC now? Save your work first.", L"Tandem",
+                        MB_OKCANCEL | MB_ICONQUESTION) == IDOK &&
+            !driver::RestartWindows())
+            MessageBoxW(settings_, L"Windows did not restart. Please restart it yourself.", L"Tandem", MB_ICONWARNING);
+        break;
+    case 2:
+        EnableWindow(GetDlgItem(settings_, kCtlDriverFix), FALSE);
+        if (driver::RunElevatedInstall())
+            MessageBoxW(settings_,
+                        L"The display driver is installed. Restart your PC to finish; until then the tablet "
+                        L"mirrors the main screen.",
+                        L"Tandem", MB_ICONINFORMATION);
+        else
+            MessageBoxW(settings_, L"The display driver was not installed.", L"Tandem", MB_ICONWARNING);
+        if (settings_) EnableWindow(GetDlgItem(settings_, kCtlDriverFix), TRUE);
+        break;
+    case 3: ShellExecuteW(settings_, L"open", L"devmgmt.msc", nullptr, nullptr, SW_SHOWNORMAL); break;
+    }
+    RefreshDriver();
 }
 
 // ---- updates --------------------------------------------------------------

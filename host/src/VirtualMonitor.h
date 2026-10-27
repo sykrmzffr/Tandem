@@ -4,10 +4,11 @@
 
 // Helpers for the Virtual Display Driver (VDD) monitor.
 //
-// The monitor is left attached at all times. Attaching/detaching it through
-// registry-backed display changes (CDS_UPDATEREGISTRY) hung VDD and froze the
-// whole system in testing, so only the in-place mode switch below is used, and
-// only before capture starts.
+// Attaching/detaching the monitor through registry-backed display changes
+// (CDS_UPDATEREGISTRY) hung VDD and froze the whole system in testing, so it only
+// leaves and joins the desktop through Windows' display configuration (Win+P,
+// SetScreen), and only the in-place mode switch below changes its mode, before
+// capture starts.
 // Disabling/re-enabling the VDD device works, but capturing its monitor afterwards
 // hung the graphics stack too, so when the tablet goes away its windows are moved
 // back to the main screen instead.
@@ -43,6 +44,17 @@ bool OnlyVddBesidesBuiltIn();
 // True when the VDD monitor is the only active screen (Win+P "Second screen only"
 // with no other monitor): without the tablet, nothing would be visible.
 bool OnlyVddActive();
+
+// The VDD monitor in Windows' display setup: 0 none (driver not running, or it made
+// no monitor), 1 connected but off the desktop, 2 on the desktop.
+int ScreenState();
+
+// Puts the VDD monitor on the desktop or takes it off, leaving the other screens
+// as they are, like "Extend these displays" / "Disconnect this display" in
+// Settings > Display. Windows keeps the VDD device running either way, as with
+// Win+P. Turning on uses the place and mode Windows remembers for this set of
+// screens. True when it is in the requested state.
+bool SetScreen(bool on);
 
 // Desktop area of the VDD monitor; false when it is not on the desktop.
 bool Bounds(RECT& out);

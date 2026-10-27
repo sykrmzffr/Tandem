@@ -43,7 +43,7 @@ Tandem decided; the tablet's own log is `adb logcat -s Tandem`.
 | 23 | Laptop + external monitor + tablet, unplug the tablet | Both real screens stay on; windows from the tablet move to the main screen |
 | 24 | Tablet set as main display, unplug | Windows move to the largest real screen |
 | 25 | Tablet placed left of or above the main screen | Touch and pen land where you tap |
-| 26 | Main screen and tablet at different scaling (e.g. 125% / 200%) | Windows moved back keep a sensible size |
+| 26 | Main screen and tablet at different scaling (e.g. 125% / 200%) | Windows moved back keep a sensible size; back on the tablet they have their old size |
 | 27 | Desktop PC (no built-in screen) + monitor + tablet, unplug | Monitor stays on; windows moved back (the empty extra screen stays until replug) |
 
 ## Tablets and settings
@@ -55,5 +55,15 @@ Tandem decided; the tablet's own log is `adb logcat -s Tandem`.
 | 30 | Phone (20:9) instead of a tablet | Works, letterboxed or exact after restart |
 | 31 | Android 8 device | Works (no low-latency extras) |
 | 32 | Video quality Sharp / Balanced / Fastest | Stream restarts at the new size |
-| 33 | Battery saver: on battery vs plugged in | 60 Hz on battery (default), up to 120 Hz plugged in |
+| 33 | Battery saver: on battery vs plugged in | Off by default (up to 120 Hz); "When on battery": 60 Hz on battery, up to 120 Hz plugged in |
 | 34 | Touch and pen switches off | Tablet input ignored |
+
+## Display driver
+
+| # | Scenario | Expected |
+|---|---|---|
+| 35 | Settings window, everything working | "Display driver: running, tablet screen on" (or "off until a tablet connects") |
+| 36 | Tablet screen off with a monitor on (e.g. Tandem restarted after an unplug, or a monitor plugged in meanwhile), connect the tablet | The tablet screen turns on by itself in its old place; no mirroring of the monitor; other screens keep their resolution |
+| 37 | Driver not installed | Line in red, **Install display driver** button; the tablet mirrors meanwhile |
+| 38 | Driver turned off in Device Manager | Line in red, **Open Device Manager**; status says to turn it on and restart |
+| 39 | Driver turned on while Tandem runs | Asks for a restart; does not capture the new screen until then |

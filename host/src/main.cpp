@@ -253,11 +253,12 @@ void RunSession(SOCKET sock, const Options& opt, const std::function<bool()>& st
     bool isVdd = output.monitorName.find(L"VDD") != std::wstring::npos && output.gdiName == vddName;
     if (!isVdd && opt.display < 0) {
         bool duplicate = !vddName.empty() && output.monitorName.find(L"VDD") != std::wstring::npos;
+        driver::Health health = driver::CheckHealth();
         Log("Mirroring %s (%s)", Narrow(output.gdiName).c_str(),
-            duplicate ? "Duplicate mode" : vddName.empty() ? "no Virtual Display Driver monitor" : "VDD monitor off");
-        Status(duplicate         ? L"Duplicate mode: mirroring the main screen. Press Win+P > Extend for a second screen"
-               : vddName.empty() ? L"Mirroring the main screen: install Virtual Display Driver to extend"
-                                 : L"Mirroring the main screen: enable the Virtual Display Driver monitor to extend",
+            duplicate ? "Duplicate mode" : Narrow(health.Summary()).c_str());
+        Status(duplicate     ? L"Duplicate mode: mirroring the main screen. Press Win+P > Extend for a second screen"
+               : health.Ok() ? L"Mirroring the main screen: the tablet screen is off. Press Win+P > Extend"
+                             : L"Mirroring the main screen. " + health.Advice(),
                true);
     }
 
@@ -565,7 +566,10 @@ bool SuperDisplayRunning() {
 void HostLoop(Options opt) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     Log("Tandem host starting. Displays:");
-    PrintOutputs();
+    for (auto& o : ListOutputs())
+        Log("  %s %ldx%ld at (%ld,%ld) \"%s\" on %s%s", Narrow(o.gdiName).c_str(), o.desktop.right - o.desktop.left,
+            o.desktop.bottom - o.desktop.top, o.desktop.left, o.desktop.top, Narrow(o.monitorName).c_str(),
+            Narrow(o.adapterName).c_str(), o.primary ? " [main]" : "");
 
     Adb adb;
     if (!adb.Locate()) {
@@ -575,8 +579,10 @@ void HostLoop(Options opt) {
     }
     Log("Using %s", Narrow(adb.Path()).c_str());
 
+    driver::Health health = driver::CheckHealth();
+    Log("%s", Narrow(health.Summary()).c_str());
     // A freshly installed display driver is only captured after a restart (see Driver.h).
-    if (driver::RestartPending()) {
+    if (health.restartPending) {
         Log("Virtual Display Driver was installed; waiting for Windows to restart");
         Status(L"Restart your PC to finish installing the display driver", true);
         while (!g_quit) Sleep(500);
@@ -593,6 +599,8 @@ void HostLoop(Options opt) {
 
     std::string current;
     std::string lastState = "?";
+    std::wstring driverAdvice = health.Advice(); // shown while waiting for a tablet
+    uint64_t driverCheckedAt = NowUs();
     uint64_t noDeviceSince = 0;  // debounces brief adb hiccups
     uint64_t sessionEndedAt = 0; // last stream end while the cable stayed in, 0 if none
     // The tablet's screen stays on the desktop only while the tablet shows it: when it
@@ -601,7 +609,16 @@ void HostLoop(Options opt) {
     // that would switch them off too, so then only the windows are moved back.
     // Switching the VDD device itself off froze Windows (see VirtualMonitor.h).
     Settings& settings = AppSettings();
-    bool needRescue = !VirtualMonitor::Find().empty() && VirtualMonitor::Topology() != 2; // off at start without a tablet
+    bool needRescue = VirtualMonitor::ScreenState() == 2 && VirtualMonitor::Topology() != 2; // off at start without a tablet
+    // Windows that move themselves back where the tablet's screen was end up off-screen.
+    auto catchStranded = [](bool haveArea, const RECT& area) {
+        for (int wait : {1000, 2000}) {
+            if (!haveArea) break;
+            Sleep(wait);
+            if (int n = VirtualMonitor::MoveStrandedWindows(area))
+                Log("Moved %d window(s) left off-screen back to the main screen", n);
+        }
+    };
     auto rescueWindows = [&](const char* why) {
         needRescue = false;
         int mode = VirtualMonitor::Topology();
@@ -621,24 +638,37 @@ void HostLoop(Options opt) {
                 settings.Save();
                 Log("%s: moved %d window(s) back and turned the tablet screen off", why, moved);
                 Status(L"Tablet screen off until the tablet is connected");
-                for (int wait : {1000, 2000}) { // then catch any that moved themselves back
-                    if (!haveArea) break;
-                    Sleep(wait);
-                    if (int n = VirtualMonitor::MoveStrandedWindows(area))
-                        Log("Moved %d window(s) left off-screen back to the main screen", n);
-                }
+                catchStranded(haveArea, area);
                 return;
             }
         }
+        // Other monitors stay on: move the windows, then take just the tablet's screen
+        // off so the pointer cannot get lost on it (in Duplicate it shows nothing of its own).
+        RECT area{};
+        bool haveArea = VirtualMonitor::Bounds(area);
         int n = VirtualMonitor::MoveWindowsToPrimary();
+        if (mode != 1 && VirtualMonitor::SetScreen(false)) {
+            Log("%s: moved %d window(s) back and turned the tablet screen off", why, n);
+            Status(L"Tablet screen off until the tablet is connected");
+            catchStranded(haveArea, area);
+            return;
+        }
         Log("%s: moved %d window(s) back to the main screen", why, n);
     };
     auto screenOn = [&] {
         int mode = settings.restoreMode.exchange(-1);
-        if (mode < 0) return;
-        settings.Save();
-        if (VirtualMonitor::Topology() != 2) return; // the user changed it meanwhile
-        if (VirtualMonitor::SetTopology(mode)) Sleep(1500); // let the desktop settle before capturing
+        if (mode >= 0) {
+            settings.Save();
+            // Unless the user changed it meanwhile; then let the desktop settle before capturing.
+            if (VirtualMonitor::Topology() == 2 && VirtualMonitor::SetTopology(mode)) Sleep(1500);
+        }
+        // The tablet's screen can also be off with other screens on: turned off on
+        // unplug, or Windows brought back a setup without it (e.g. after a monitor
+        // was plugged in). Turn it on, unless the user picked "PC screen only".
+        if (VirtualMonitor::ScreenState() != 1 || VirtualMonitor::Topology() == 2 || !driver::CheckHealth().Ok())
+            return;
+        bool on = VirtualMonitor::Topology() == 1 ? VirtualMonitor::SetTopology(1) : VirtualMonitor::SetScreen(true);
+        if (on) Sleep(1500);
     };
     while (!g_quit) {
         if (SuperDisplayRunning()) {
@@ -652,6 +682,17 @@ void HostLoop(Options opt) {
         std::string serial = adb.FirstReadyDevice();
         if (serial.empty()) {
             std::string state = adb.FirstDeviceState();
+            if (state == "device") continue; // came up between the two queries
+            // Keep an eye on the display driver meanwhile: it can stop or be turned off.
+            if (NowUs() - driverCheckedAt > 5000000) {
+                driverCheckedAt = NowUs();
+                driver::Health h = driver::CheckHealth();
+                if (h.Advice() != driverAdvice) {
+                    driverAdvice = h.Advice();
+                    Log("%s", Narrow(h.Summary()).c_str());
+                    lastState = "?"; // show it
+                }
+            }
             if (state != lastState) {
                 if (state == "unauthorized") {
                     Log("Tablet found but USB debugging is not authorized for this PC");
@@ -659,6 +700,8 @@ void HostLoop(Options opt) {
                 } else if (!state.empty()) {
                     Log("Tablet found in state '%s'", state.c_str());
                     Status(L"Tablet found but not ready (" + Widen(state) + L"); reconnect the cable");
+                } else if (!driverAdvice.empty()) {
+                    Status(driverAdvice, true);
                 } else {
                     Log("Waiting for a tablet (USB cable, USB debugging enabled)...");
                     Status(L"Waiting for tablet (plug in USB)");
@@ -692,6 +735,13 @@ void HostLoop(Options opt) {
             continue;
         }
         Log("Tablet app connected");
+        if (driver::Health h = driver::CheckHealth(); h.restartPending) {
+            Log("%s", Narrow(h.Summary()).c_str()); // capturing it now could freeze Windows
+            Status(h.Advice(), true);
+            closesocket(c);
+            Sleep(5000);
+            continue;
+        }
         screenOn(); // reopened after the screen was turned off
         sessionEndedAt = 0;
         needRescue = true;

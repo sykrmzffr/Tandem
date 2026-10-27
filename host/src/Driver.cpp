@@ -1,16 +1,19 @@
 #include "Driver.h"
 #include <setupapi.h>
+#include <cfgmgr32.h>
 #include <devguid.h>
 #include <newdev.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <string>
 #include <iterator>
 #include <vector>
 #include "Resources.h"
 #include "Util.h"
+#include "VirtualMonitor.h"
 
 namespace driver {
 namespace {
@@ -279,6 +282,69 @@ bool Present() {
     for (DWORD i = 0; !found && SetupDiEnumDeviceInfo(set, i, &dev); i++) found = HasHardwareId(set, dev);
     SetupDiDestroyDeviceInfoList(set);
     return found;
+}
+
+Health CheckHealth() {
+    Health h;
+    HDEVINFO set = SetupDiGetClassDevsW(&GUID_DEVCLASS_DISPLAY, nullptr, nullptr, DIGCF_PRESENT);
+    if (set != INVALID_HANDLE_VALUE) {
+        SP_DEVINFO_DATA dev{sizeof dev};
+        for (DWORD i = 0; h.state != State::Running && SetupDiEnumDeviceInfo(set, i, &dev); i++) {
+            if (!HasHardwareId(set, dev)) continue;
+            ULONG status = 0, problem = 0;
+            if (CM_Get_DevNode_Status(&status, &problem, dev.DevInst, 0) != CR_SUCCESS) {
+                h.state = State::Failed;
+            } else if (status & DN_HAS_PROBLEM) {
+                h.state = problem == CM_PROB_DISABLED ? State::Disabled : State::Failed;
+                h.problem = problem;
+            } else {
+                h.state = status & DN_STARTED ? State::Running : State::Failed;
+            }
+        }
+        SetupDiDestroyDeviceInfoList(set);
+    }
+    // Started while Windows was running (e.g. turned on in Device Manager): capturing
+    // it then froze the test laptop, as after an install. Not in the first minutes
+    // after boot, when the driver may simply start after Tandem.
+    static std::atomic<int> runningAtStart{-1};
+    int unknown = -1;
+    runningAtStart.compare_exchange_strong(unknown,
+                                           h.state == State::Running || GetTickCount64() < 3 * 60 * 1000 ? 1 : 0);
+    h.restartPending = RestartPending() || (h.state == State::Running && runningAtStart == 0);
+    if (h.state == State::Running) h.screen = VirtualMonitor::ScreenState();
+    return h;
+}
+
+std::wstring Health::Summary() const {
+    std::wstring s = L"Display driver: ";
+    if (restartPending) return s + L"installed, restart your PC to finish";
+    switch (state) {
+    case State::Missing: return s + L"not installed (the tablet can only mirror)";
+    case State::Disabled: return s + L"turned off in Device Manager";
+    case State::Failed:
+        return s + (problem ? L"not working (Device Manager code " + std::to_wstring(problem) + L")"
+                            : std::wstring(L"not started"));
+    case State::Running: break;
+    }
+    return s + (screen == 2   ? L"running, tablet screen on"
+                : screen == 1 ? L"running, tablet screen off until a tablet connects"
+                              : L"running, but it made no screen");
+}
+
+std::wstring Health::Advice() const {
+    if (restartPending) return L"Restart your PC to finish setting up the display driver";
+    switch (state) {
+    case State::Missing:
+        return L"The display driver is not installed, so the tablet can only mirror. Install it in Tandem's settings";
+    case State::Disabled:
+        return L"The display driver is turned off in Device Manager. Turn it on there, then restart your PC";
+    case State::Failed:
+        return L"The display driver is not working. Restart your PC; if that does not help, reinstall Tandem";
+    case State::Running: break;
+    }
+    if (screen == 0)
+        return L"The display driver made no screen. Restart your PC; if that does not help, reinstall Tandem";
+    return L"";
 }
 
 bool InstalledByUs() {

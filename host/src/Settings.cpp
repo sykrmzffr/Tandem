@@ -68,8 +68,8 @@ void Settings::Load() {
     restoreWindows = ReadBool(L"RestoreWindows", true);
     int restore = int(GetPrivateProfileIntW(kSection, L"RestoreScreenMode", -1, IniPath().c_str()));
     restoreMode = (restore == 0 || restore == 1 || restore == 3) ? restore : -1;
-    int saver = GetPrivateProfileIntW(kSection, L"BatterySaver", kSaverOnBattery, IniPath().c_str());
-    batterySaver = (saver >= kSaverOnBattery && saver <= kSaverOff) ? saver : kSaverOnBattery;
+    int saver = GetPrivateProfileIntW(kSection, L"BatterySaver", kSaverOff, IniPath().c_str());
+    batterySaver = (saver >= kSaverOnBattery && saver <= kSaverOff) ? saver : kSaverOff;
     int orient = GetPrivateProfileIntW(kSection, L"Orientation", 0, IniPath().c_str());
     orientation = (orient >= 0 && orient <= 2) ? orient : 0;
 }

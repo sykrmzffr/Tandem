@@ -417,6 +417,7 @@ bool Uninstall(bool quiet) {
         RegCloseKey(key);
     }
     RegDeleteKeyW(HKEY_CURRENT_USER, kUninstallKey);
+    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Tandem"); // the tablet screen's last place
     DeleteFileW(ShortcutPath().c_str());
     DeleteTree(Settings::DataDir());
     DeleteTree(KnownFolder(FOLDERID_LocalAppData) + L"\\Tandem\\");

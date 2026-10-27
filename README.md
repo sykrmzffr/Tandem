@@ -97,10 +97,16 @@ puts its icon in the notification area). Click the tray icon (or start Tandem
 again from the Start menu) for the
 settings window; right-click it for the same options as a menu, plus **Quit**:
 
+- **Display driver** line: whether the driver that makes the extra screen is
+  installed and running, and whether the tablet's screen is on. If something is
+  wrong it says what to do, with a button for it (**Install display driver**,
+  **Open Device Manager** or **Restart PC**). Tandem keeps checking while it
+  waits for a tablet.
+
 - **Touch input / Pen input**: turn tablet input on or off (applies instantly).
 - **Video quality**: Sharp (full resolution), Balanced (75%, default),
   Fastest (50%). Lower = less latency, softer text.
-- **Battery saver**: When on battery (default), Always, or Off. It runs the
+- **Battery saver**: When on battery, Always, or Off (default). It runs the
   virtual monitor, the stream and the tablet screen at 60 Hz instead of up to
   120 Hz. Turning it on or off (or plugging in the charger) restarts the
   stream for a moment, so the refresh rate is only changed before capture starts.
@@ -110,9 +116,15 @@ settings window; right-click it for the same options as a menu, plus **Quit**:
   cable is unplugged, or the tablet app is closed for 3 seconds, Tandem
   switches Windows to "PC screen only" (as Win+P does), so the extra screen is
   gone and windows and the pointer stay on the main screen. Plugging the tablet
-  back in restores Extend (or Duplicate). With another monitor attached it only
-  moves windows back, so that monitor stays on. The driver itself stays
-  installed and running: switching it off and on froze Windows in testing.
+  back in restores Extend (or Duplicate). With another monitor attached, only
+  the tablet's screen is turned off (as "Disconnect this display" in Windows
+  Settings does), so that monitor stays on and keeps its resolution. In
+  Duplicate mode the tablet's screen is left as it is. The driver itself stays installed
+  and running: switching it off and on froze Windows in testing.
+- Whenever the tablet connects and its screen is off (for example because a
+  monitor was plugged in meanwhile and Windows brought back a setup without the
+  tablet), Tandem turns it back on where it was, unless you picked "PC screen
+  only".
 - **Move windows back to the tablet when it reconnects** (on by default): the
   windows that were on the tablet screen return to their places on it, unless
   you moved, minimized or closed them in the meantime.

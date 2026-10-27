@@ -11,6 +11,15 @@ All notable changes to Tandem (called FreeDisplay up to version 1.2.0). Versions
   button too.
 - Opening Tandem now shows its window; when it starts with Windows it stays
   in the notification area as before.
+- The settings window shows whether the display driver is installed and
+  running and whether the tablet's screen is on. If not, it says what to do and
+  offers a button for it (install the driver, open Device Manager, restart).
+  Tandem keeps checking while it waits for a tablet, and the log lists the
+  screens at start.
+
+### Changed
+- **Battery saver** is now off by default on new installs (the stream runs at up
+  to 120 Hz). Your current choice is kept when you update.
 
 ### Fixed
 - Opening Tandem while it was already running started a second copy (since
@@ -21,6 +30,20 @@ All notable changes to Tandem (called FreeDisplay up to version 1.2.0). Versions
   screen only" when the tablet returns.
 - When the tablet was set as the main display, windows were not moved off it
   on unplug. They now go to the largest remaining screen.
+- With a monitor plugged in while the tablet was away, Windows could bring back
+  a setup without the tablet's screen, and the tablet only mirrored the
+  monitor. Tandem now turns the tablet's screen on when the tablet connects,
+  in the place it had before.
+- With another monitor attached, unplugging the tablet left its empty screen
+  on the desktop, where the pointer could get lost. Now only the tablet's
+  screen is turned off; the other screens keep their resolution and place, and
+  the tablet's screen comes back when the tablet does.
+- Windows moved between the tablet and a screen with different scaling came
+  back at the wrong size (2.5 times too big on a tablet at 250%). They now
+  return at the size they had.
+- If the display driver was turned on while Windows was running, Tandem now
+  asks for a restart instead of using it (that could freeze Windows).
+- A replugged tablet could briefly show "Tablet found but not ready".
 - Some tablets stayed on the waiting screen because their video decoder
   rejected Tandem's low-latency settings (seen on a Huawei MatePad). Tandem now
   falls back to plain settings and to the tablet's other decoders, and if none
