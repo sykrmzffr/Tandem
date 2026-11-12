@@ -11,7 +11,9 @@ struct Settings {
     std::atomic<bool> startWithWindows{false};
     std::atomic<bool> moveWindowsBack{true}; // turn off the tablet screen (or move windows back) when it goes away
     std::atomic<bool> restoreWindows{true}; // put windows back on the tablet screen when it returns
-    std::atomic<int> restoreMode{-1}; // Win+P mode to restore (0 extend, 1 duplicate, 3 second screen only) // screen mode to restore when the tablet returns (0 extend, 1 duplicate)
+    std::atomic<int> restoreMode{-1}; // Win+P mode to restore when the tablet returns (0 extend, 1 duplicate, 3 second screen only)
+    std::atomic<bool> streamOn{true}; // "Stream to tablet": off pauses the stream and turns the tablet screen off
+    std::atomic<bool> screenOurs{true}; // the tablet screen is on the desktop because of Tandem (see HostLoop)
     enum Saver : int { kSaverOnBattery = 0, kSaverAlways = 1, kSaverOff = 2 };
     std::atomic<int> batterySaver{kSaverOff}; // 60 Hz instead of up to 120 Hz
     std::atomic<int> orientation{0}; // 0 follow the tablet, 1 landscape, 2 portrait (proto::Orientation)
@@ -26,6 +28,12 @@ struct Settings {
     static bool ApplyStartWithWindows(bool enable);
 
     static std::wstring DataDir(); // %APPDATA%\Tandem, created on demand
+
+    // Text values kept next to the settings (used on the UI thread only): UpdateSkipped,
+    // the version the user chose to skip, and UpdateOffered, "<version> <day>" of the
+    // last update popup.
+    static std::wstring ReadText(const wchar_t* key);
+    static void WriteText(const wchar_t* key, const std::wstring& value);
 };
 
 Settings& AppSettings();

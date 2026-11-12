@@ -61,6 +61,24 @@ inline std::wstring ExeDir() {
     return p.substr(0, p.find_last_of(L'\\') + 1);
 }
 
+#ifdef TANDEM_TEST
+// Test builds only (set CL=/DTANDEM_TEST before build.bat; never released): the word in
+// %TEMP%\tandem-test.txt makes the display driver look missing, disabled, failed,
+// noscreen or late (turned on while Windows runs), or with othermonitor makes Tandem
+// act as if another monitor were attached. See TESTING.md.
+inline std::wstring TestFault() {
+    wchar_t path[MAX_PATH], word[32] = {};
+    GetTempPathW(MAX_PATH, path);
+    wcscat_s(path, L"tandem-test.txt");
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"r") == 0 && f) {
+        fwscanf_s(f, L"%31s", word, 32);
+        fclose(f);
+    }
+    return word;
+}
+#endif
+
 inline uint64_t NowUs() {
     static LARGE_INTEGER freq = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f; }();
     LARGE_INTEGER c;

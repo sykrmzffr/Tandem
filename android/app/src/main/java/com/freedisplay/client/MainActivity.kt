@@ -19,6 +19,7 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import kotlin.math.atan
@@ -35,6 +36,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, StreamClient.Listener {
     private lateinit var surfaceView: SurfaceView
     private lateinit var status: TextView
     private lateinit var updateButton: Button
+    private lateinit var buttons: LinearLayout // shown with the waiting and paused texts
     private var client: StreamClient? = null
     private var videoW = 0
     private var videoH = 0
@@ -75,12 +77,24 @@ class MainActivity : Activity(), SurfaceHolder.Callback, StreamClient.Listener {
             isAllCaps = false
             setOnClickListener { checkForUpdates() }
         }
-        root.addView(updateButton, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+        val feedbackButton = Button(this).apply {
+            text = "Report a problem"
+            isAllCaps = false
+            setOnClickListener { reportProblem() }
+        }
+        buttons = LinearLayout(this).apply {
+            addView(updateButton)
+            addView(feedbackButton)
+        }
+        root.addView(buttons, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
             bottomMargin = (32 * resources.displayMetrics.density).toInt()
         })
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitVideo() }
         setContentView(root)
 
+        // Debug builds: `am start ... --ei rejectFormats 1|2` tests the decoder fallbacks.
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0)
+            VideoDecoder.testReject = intent.getIntExtra("rejectFormats", 0)
         refreshRate = requestRefreshRate(TARGET_HZ)
         applyOrientation(getPreferences(MODE_PRIVATE).getInt(PREF_ORIENTATION, Protocol.ORIENT_AUTO))
         orientationListener = object : OrientationEventListener(this) {
@@ -239,7 +253,17 @@ class MainActivity : Activity(), SurfaceHolder.Callback, StreamClient.Listener {
     override fun onStatus(text: String) = runOnUiThread {
         status.text = text
         status.visibility = View.VISIBLE
-        updateButton.visibility = View.VISIBLE
+        buttons.visibility = View.VISIBLE
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    override fun onPaused() = runOnUiThread {
+        status.text = "Tandem\n\nPaused on the PC\n\n" +
+            "To use this tablet as a screen again, turn on\n\"Stream to tablet\" in Tandem on your PC."
+        status.visibility = View.VISIBLE
+        buttons.visibility = View.VISIBLE
+        // Nothing to show until the PC resumes: let the tablet sleep as it normally would.
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     override fun onVideoSize(width: Int, height: Int, fps: Int) = runOnUiThread {
@@ -258,7 +282,36 @@ class MainActivity : Activity(), SurfaceHolder.Callback, StreamClient.Listener {
 
     override fun onStreaming() = runOnUiThread {
         status.visibility = View.GONE
-        updateButton.visibility = View.GONE
+        buttons.visibility = View.GONE
+    }
+
+    /**
+     * Opens a GitHub issue in the browser, filled in with what describes this tablet.
+     * Nothing is sent until the user submits the form there.
+     */
+    private fun reportProblem() {
+        @Suppress("DEPRECATION")
+        val version = packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+        val (w, h) = screenSize()
+        val body = "Tandem tablet app $version\n" +
+            "Device: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n" +
+            "Screen: ${w}x$h, $refreshRate Hz, ${resources.displayMetrics.densityDpi} dpi\n" +
+            "Decoder: ${VideoDecoder.lastInfo}\n" +
+            "Shown on the tablet: ${status.text.toString().replace(Regex("\\s+"), " ").take(200)}\n\n" +
+            "### What happened, and what did you expect?\n\n"
+        val url = Uri.parse("https://github.com/sykrmzffr/Tandem/issues/new").buildUpon()
+            .appendQueryParameter("title", "Tablet app $version: ")
+            .appendQueryParameter("body", body)
+            .build().toString()
+        AlertDialog.Builder(this)
+            .setTitle("Report a problem")
+            .setMessage("This opens a GitHub page in your browser with a report already filled in: the app " +
+                "version, this tablet's model, Android version, screen and video decoder. Nothing is sent until " +
+                "you press Submit there. You need a GitHub account.\n\nFor problems with the picture or the " +
+                "connection, \"Send feedback\" in Tandem on your PC adds the PC's log too.")
+            .setPositiveButton("Open the report page") { _, _ -> open(url) }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun checkForUpdates() {

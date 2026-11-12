@@ -21,8 +21,8 @@ android {
         applicationId = "com.freedisplay.client"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14 // keep in sync with kAppVersionCode in host/src/main.cpp
-        versionName = "1.3.1"
+        versionCode = 15 // keep in sync with kAppVersionCode in host/src/main.cpp
+        versionName = "1.3.2"
     }
 
     signingConfigs {

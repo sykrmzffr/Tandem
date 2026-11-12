@@ -28,10 +28,12 @@ class StreamClient(
         fun onVideoSize(width: Int, height: Int, fps: Int)
         fun onStreaming()
         fun onOrientation(orientation: Int)
+        fun onPaused()
     }
 
     @Volatile private var running = false
     @Volatile private var socket: Socket? = null
+    private var paused = false // the PC said streaming is switched off there
     private var thread: Thread? = null
     private val outbox = LinkedBlockingQueue<ByteArray>(256)
 
@@ -54,7 +56,11 @@ class StreamClient(
 
     private fun loop() {
         while (running) {
-            listener.onStatus(
+            // After "paused", keep that on screen while reconnecting: the PC says it again,
+            // starts streaming, or is gone (then the next round shows the waiting text).
+            val wasPaused = paused
+            paused = false
+            if (!wasPaused) listener.onStatus(
                 "Tandem\n\nWaiting for your PC…\n\n" +
                     "1.  Run Tandem on Windows (look for its tray icon)\n" +
                     "2.  Connect this tablet with a USB cable\n" +
@@ -139,6 +145,10 @@ class StreamClient(
                 when (type) {
                     Protocol.PING -> send(Protocol.message(Protocol.PONG) { write(buffer, 0, length) })
                     Protocol.ORIENTATION -> if (length >= 1) listener.onOrientation(buffer[0].toInt())
+                    Protocol.PAUSED -> {
+                        paused = true
+                        listener.onPaused()
+                    }
                     Protocol.VIDEO_CONFIG -> {
                         val w = readInt(buffer, 0)
                         val h = readInt(buffer, 4)
@@ -154,7 +164,7 @@ class StreamClient(
                         if (busyMs > 300) Log.w(TAG, "decoder took $busyMs ms to accept a frame")
                         if (!fed) {
                             send(Protocol.message(Protocol.REQUEST_KEYFRAME))
-                        } else if (!streaming) {
+                        } else if (!streaming && decoder.isStarted) { // not while it shows why it cannot start
                             streaming = true
                             listener.onStreaming()
                         }

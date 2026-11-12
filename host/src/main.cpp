@@ -7,6 +7,7 @@
 #include <timeapi.h>
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -32,7 +33,7 @@ namespace {
 
 constexpr const wchar_t* kPackage = L"com.freedisplay.client";
 constexpr const wchar_t* kActivity = L"com.freedisplay.client/.MainActivity";
-constexpr int kAppVersionCode = 14; // keep in sync with android/app/build.gradle.kts
+constexpr int kAppVersionCode = 15; // keep in sync with android/app/build.gradle.kts
 
 struct Options {
     int display = -1;     // -1: auto (VDD monitor, else primary)
@@ -68,6 +69,16 @@ std::unique_ptr<VideoEncoder> OpenEncoder(const Options& opt, Capture& cap, UINT
 std::atomic<bool> g_quit{false};
 std::atomic<bool> g_restart{false}; // end the current session so it restarts with new settings
 std::atomic<uint64_t> g_displayChangedAt{0}; // last WM_DISPLAYCHANGE (NowUs), 0 when handled
+std::atomic<bool> g_restartTabletApp{false}; // "Restart tablet app" was chosen
+std::atomic<bool> g_tabletReady{false};      // a tablet is attached and set up
+std::atomic<bool> g_handover{false}; // quitting for a new copy (restart, update), which takes over the tablet screen
+std::atomic<bool> g_hostDone{false}; // HostLoop has finished (the tablet screen is dealt with)
+// For problem reports: what the last session used, and the tablet's serial number,
+// which is kept out of them.
+std::mutex g_infoMu;
+std::wstring g_streamInfo, g_tabletInfo, g_androidVersion;
+std::string g_serial;
+constexpr const wchar_t* kPausedStatus = L"Paused: \"Stream to tablet\" is off";
 DWORD g_uiThread = 0;
 Tray* g_tray = nullptr;
 
@@ -166,12 +177,21 @@ int InstalledVersionCode(const Adb& adb, const std::string& serial) {
 bool PrepareDevice(const Adb& adb, const std::string& serial, const Options& opt) {
     if (opt.install) {
         int installed = InstalledVersionCode(adb, serial);
-        if (installed != kAppVersionCode) {
+        int wanted = kAppVersionCode;
+#ifdef TANDEM_TEST // pretend this Tandem carries another app version (TESTING.md case 45)
+        wchar_t fake[8];
+        if (GetEnvironmentVariableW(L"TANDEM_TEST_APP_VERSION", fake, 8)) wanted = _wtoi(fake);
+#endif
+        if (installed > wanted) {
+            // Updated on the tablet itself. Android refuses to put an older app over it.
+            Log("The tablet app (version %d) is newer than this Tandem's (%d): update Tandem on this PC", installed,
+                wanted);
+        } else if (installed != wanted) {
             std::wstring apk = installer::PayloadDir() + L"Tandem.apk";
             if (GetFileAttributesW(apk.c_str()) == INVALID_FILE_ATTRIBUTES) {
                 Log("Tandem.apk not found; install the tablet app manually");
             } else {
-                Log("Installing tablet app (installed version %d, need %d)...", installed, kAppVersionCode);
+                Log("Installing tablet app (installed version %d, need %d)...", installed, wanted);
                 std::string out;
                 int rc = adb.RunOn(serial, L"install -r -g \"" + apk + L"\"", &out, 120000);
                 // Builds up to 1.1.1 were signed with a development key; Android refuses to
@@ -194,6 +214,12 @@ bool PrepareDevice(const Adb& adb, const std::string& serial, const Options& opt
         return false;
     }
     adb.RunOn(serial, std::wstring(L"shell am start -n ") + kActivity, &out);
+    std::string android;
+    adb.RunOn(serial, L"shell getprop ro.build.version.release", &android);
+    while (!android.empty() && isspace(static_cast<unsigned char>(android.back()))) android.pop_back();
+    std::lock_guard<std::mutex> lock(g_infoMu);
+    g_serial = serial;
+    g_androidVersion = Widen(android);
     return true;
 }
 
@@ -221,7 +247,14 @@ void RunSession(SOCKET sock, const Options& opt, const std::function<bool()>& st
     std::string name = hello.rest();
     if (magic != proto::kMagic || version != proto::kVersion) {
         Log("Protocol mismatch (magic %08X version %u)", magic, version);
+        Status(L"Tandem on this PC and the tablet app are different versions. Update Tandem (Check for updates)");
+        Sleep(2000);
         return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_infoMu);
+        g_tabletInfo = Widen(name) + L", " + std::to_wstring(tabW) + L"x" + std::to_wstring(tabH) + L" @ " +
+                       std::to_wstring(tabHz) + L" Hz";
     }
     Log("Tablet: %s, %ux%u @ %u dpi, up to %u Hz, decodes up to %ux%u", name.c_str(), tabW, tabH, dpi, tabHz,
         maxDecW, maxDecH);
@@ -309,6 +342,11 @@ void RunSession(SOCKET sock, const Options& opt, const std::function<bool()>& st
     if (!enc) {
         Log("Encoder setup failed");
         return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_infoMu);
+        g_streamInfo = output.adapterName + L", " + Widen(enc->Name()) + L", " + std::to_wstring(w) + L"x" +
+                       std::to_wstring(h) + L" @ " + std::to_wstring(fps) + L" Hz";
     }
     if (!input.Init()) Log("Input injection unavailable; display only");
     input.SetTarget(output.desktop);
@@ -428,7 +466,7 @@ void RunSession(SOCKET sock, const Options& opt, const std::function<bool()>& st
     int refineLeft = 0;
     uint64_t lastPing = 0;
     uint64_t quietSince = 0; // the tablet went silent (but may still be attached)
-    while (alive && !g_quit && !g_restart && !sendFailed) {
+    while (alive && !g_quit && !g_restart && !sendFailed && !g_restartTabletApp && AppSettings().streamOn) {
         input.KeepAlive();
         if (NowUs() - lastPing > 500000) { // measures the bare USB/adb round trip
             lastPing = NowUs();
@@ -525,6 +563,8 @@ void RunSession(SOCKET sock, const Options& opt, const std::function<bool()>& st
         }
     }
 
+    // Switched off: say so before closing, so the tablet goes straight to "Paused on the PC".
+    if (!AppSettings().streamOn) SendMsg(sock, proto::kPaused, {});
     alive = false;
     shutdown(sock, SD_BOTH);
     reader.join();
@@ -562,8 +602,35 @@ bool SuperDisplayRunning() {
     return running;
 }
 
+// "Stream to tablet" is off: tells the tablet app, which shows "Paused on the PC", and
+// keeps its connection until the switch, the tablet or Tandem changes that. Closing
+// the connection makes the app connect again.
+void HoldPaused(SOCKET sock) {
+    DWORD helloTimeoutMs = 3000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<char*>(&helloTimeoutMs), sizeof helloTimeoutMs);
+    uint8_t type;
+    std::vector<uint8_t> payload;
+    if (!RecvMsg(sock, type, payload) || type != proto::kHello || !SendMsg(sock, proto::kPaused, {})) return;
+    Log("Stream to tablet is off: the tablet shows \"Paused on the PC\"");
+    Status(kPausedStatus);
+    while (!g_quit && !AppSettings().streamOn && !g_restartTabletApp) {
+        fd_set set;
+        FD_ZERO(&set);
+        FD_SET(sock, &set);
+        timeval tv{0, 300000};
+        char discard[256];
+        if (select(0, &set, nullptr, nullptr, &tv) > 0 && recv(sock, discard, sizeof discard, 0) <= 0) {
+            Log("Tablet app disconnected while paused");
+            break;
+        }
+    }
+}
+
 // Detects the tablet, prepares it and runs streaming sessions until g_quit.
 void HostLoop(Options opt) {
+    struct Done {
+        ~Done() { g_hostDone = true; }
+    } done;
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     Log("Tandem host starting. Displays:");
     for (auto& o : ListOutputs())
@@ -609,7 +676,15 @@ void HostLoop(Options opt) {
     // that would switch them off too, so then only the windows are moved back.
     // Switching the VDD device itself off froze Windows (see VirtualMonitor.h).
     Settings& settings = AppSettings();
-    bool needRescue = VirtualMonitor::ScreenState() == 2 && VirtualMonitor::Topology() != 2; // off at start without a tablet
+    auto screenIsOn = [] { return VirtualMonitor::ScreenState() == 2 && VirtualMonitor::Topology() != 2; };
+    bool needRescue = screenIsOn(); // off at start without a tablet
+    // When Tandem closes, the tablet's screen goes off the desktop too, unless it was
+    // on before Tandem started and not because of Tandem (the user's own setup, or
+    // another app's). A screen left on by a copy that was restarted or ended with
+    // Windows is still ours: the saved flag is only cleared once it has been turned off.
+    const bool leaveScreenOn = screenIsOn() && !settings.screenOurs;
+    if (leaveScreenOn) Log("The tablet screen was on before Tandem started: it stays on when Tandem closes");
+    else if (!settings.screenOurs.exchange(true)) settings.Save();
     // Windows that move themselves back where the tablet's screen was end up off-screen.
     auto catchStranded = [](bool haveArea, const RECT& area) {
         for (int wait : {1000, 2000}) {
@@ -617,16 +692,19 @@ void HostLoop(Options opt) {
             Sleep(wait);
             if (int n = VirtualMonitor::MoveStrandedWindows(area))
                 Log("Moved %d window(s) left off-screen back to the main screen", n);
+            if (g_quit || !AppSettings().streamOn) break; // closing or paused: one look is enough
         }
     };
-    auto rescueWindows = [&](const char* why) {
+    // `always`: also when "Turn off the tablet screen when it disconnects" is off
+    // (streaming switched off, Tandem closing).
+    auto rescueWindows = [&](const char* why, bool always = false) {
         needRescue = false;
         int mode = VirtualMonitor::Topology();
         // Win+P "Second screen only" can leave the tablet as the only screen; without it
         // nothing would be visible, so switch back to this PC's screen even when the
         // setting is off.
         bool onlyTablet = VirtualMonitor::OnlyVddActive();
-        if (!settings.moveWindowsBack && !onlyTablet) return;
+        if (!always && !settings.moveWindowsBack && !onlyTablet) return;
         if (onlyTablet || ((mode == 0 || mode == 1) && VirtualMonitor::OnlyVddBesidesBuiltIn())) {
             // Move windows ourselves first: when the screen goes, Windows should move
             // them, but some apps put themselves back where they were, off-screen.
@@ -648,6 +726,12 @@ void HostLoop(Options opt) {
         bool haveArea = VirtualMonitor::Bounds(area);
         int n = VirtualMonitor::MoveWindowsToPrimary();
         if (mode != 1 && VirtualMonitor::SetScreen(false)) {
+            // If the other monitor is unplugged meanwhile, Windows is left with "PC screen
+            // only"; remembering Extend brings the tablet's screen back all the same.
+            if (mode == 0) {
+                settings.restoreMode = 0;
+                settings.Save();
+            }
             Log("%s: moved %d window(s) back and turned the tablet screen off", why, n);
             Status(L"Tablet screen off until the tablet is connected");
             catchStranded(haveArea, area);
@@ -670,7 +754,24 @@ void HostLoop(Options opt) {
         bool on = VirtualMonitor::Topology() == 1 ? VirtualMonitor::SetTopology(1) : VirtualMonitor::SetScreen(true);
         if (on) Sleep(1500);
     };
+    bool wasPaused = false;
     while (!g_quit) {
+        // "Stream to tablet" switched off or on.
+        const bool paused = !settings.streamOn;
+        if (paused != wasPaused) {
+            wasPaused = paused;
+            lastState = "?"; // show the status that fits
+            Log("Stream to tablet: %s", paused ? "off" : "on");
+            if (paused) {
+                if (screenIsOn()) rescueWindows("Streaming paused", true); // like an unplug
+                Status(kPausedStatus);
+            } else if (!current.empty()) {
+                // The tablet may have gone to sleep meanwhile: wake it and show the app.
+                adb.RunOn(current, L"shell input keyevent KEYCODE_WAKEUP");
+                adb.RunOn(current, std::wstring(L"shell am start -n ") + kActivity);
+                Status(L"Tablet connected, waiting for the app");
+            }
+        }
         if (SuperDisplayRunning()) {
             static bool warned = false;
             if (!warned) {
@@ -700,6 +801,8 @@ void HostLoop(Options opt) {
                 } else if (!state.empty()) {
                     Log("Tablet found in state '%s'", state.c_str());
                     Status(L"Tablet found but not ready (" + Widen(state) + L"); reconnect the cable");
+                } else if (paused) {
+                    Status(kPausedStatus);
                 } else if (!driverAdvice.empty()) {
                     Status(driverAdvice, true);
                 } else {
@@ -709,6 +812,8 @@ void HostLoop(Options opt) {
                 lastState = state;
             }
             current.clear();
+            g_tabletReady = false;
+            g_restartTabletApp = false;
             sessionEndedAt = 0;
             if (!noDeviceSince) noDeviceSince = NowUs();
             if (needRescue && NowUs() - noDeviceSince > 1500000) rescueWindows("Tablet unplugged");
@@ -720,13 +825,21 @@ void HostLoop(Options opt) {
         if (serial != current) {
             Log("Tablet connected: %s", serial.c_str());
             Status(L"Tablet connected, starting app...");
-            screenOn();
+            if (!paused) screenOn();
             if (!PrepareDevice(adb, serial, opt)) {
                 Status(L"Could not start the tablet app (see log)");
                 Sleep(2000);
                 continue;
             }
             current = serial;
+            g_tabletReady = true;
+        }
+        if (g_restartTabletApp.exchange(false)) {
+            Log("Restarting the tablet app");
+            Status(L"Restarting the tablet app...");
+            adb.RunOn(serial, std::wstring(L"shell am force-stop ") + kPackage);
+            adb.RunOn(serial, std::wstring(L"shell am start -n ") + kActivity);
+            if (sessionEndedAt) sessionEndedAt = NowUs(); // time to come back before its screen is turned off
         }
         SOCKET c = AcceptWithTimeout(listener, 1000);
         if (c == INVALID_SOCKET) {
@@ -735,6 +848,11 @@ void HostLoop(Options opt) {
             continue;
         }
         Log("Tablet app connected");
+        if (paused) {
+            HoldPaused(c);
+            closesocket(c);
+            continue;
+        }
         if (driver::Health h = driver::CheckHealth(); h.restartPending) {
             Log("%s", Narrow(h.Summary()).c_str()); // capturing it now could freeze Windows
             Status(h.Advice(), true);
@@ -755,6 +873,13 @@ void HostLoop(Options opt) {
         if (!g_quit) Status(L"Tablet connected, waiting for the app");
     }
     closesocket(listener);
+    // Tandem is closing and nothing will show the tablet's screen: take it off the
+    // desktop as on an unplug. Not when a new copy takes over (restart, update).
+    if (!g_handover && !leaveScreenOn) {
+        if (screenIsOn()) rescueWindows("Tandem is closing", true);
+        settings.screenOurs = false; // if it is on at the next start, that was not Tandem
+        settings.Save();
+    }
     CoUninitialize();
 }
 
@@ -898,6 +1023,18 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         if (!g_logFile) Sleep(100);
     }
     AppSettings().Load();
+    // Updates downloaded by an earlier copy (Tray::OnUpdateChecked) have done their job.
+    {
+        wchar_t temp[MAX_PATH];
+        GetTempPathW(MAX_PATH, temp);
+        WIN32_FIND_DATAW fd;
+        HANDLE found = FindFirstFileW((std::wstring(temp) + L"Tandem-*.exe").c_str(), &fd);
+        if (found != INVALID_HANDLE_VALUE) {
+            do DeleteFileW((std::wstring(temp) + fd.cFileName).c_str());
+            while (FindNextFileW(found, &fd));
+            FindClose(found);
+        }
+    }
 
     MFStartup(MF_VERSION, MFSTARTUP_LITE);
     WSADATA wsa;
@@ -908,6 +1045,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     Tray::Callbacks cb;
     cb.onQualityChanged = [] { g_restart = true; };
     cb.onQuit = [] { g_quit = true; };
+    cb.onHandover = [] { g_handover = true; };
     cb.onDisplayChanged = [] { g_displayChangedAt = NowUs(); };
     cb.onRestart = [] {
         // The new copy waits for this one to exit (it needs the single-instance mutex).
@@ -920,9 +1058,30 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
             Log("Restarting Tandem");
+            g_handover = true; // the tablet screen and the windows on it stay for the new copy
         }
         g_quit = true;
         PostQuitMessage(0);
+    };
+    cb.onRestartTablet = [] { g_restartTabletApp = true; };
+    cb.reportInfo = [] {
+        std::lock_guard<std::mutex> lock(g_infoMu);
+        std::wstring s = L"GPU / encoder: " + (g_streamInfo.empty() ? L"no stream yet" : g_streamInfo) + L"\n";
+        s += L"Tablet: " + (g_tabletInfo.empty() ? L"none connected yet" : g_tabletInfo);
+        if (!g_tabletInfo.empty() && !g_androidVersion.empty()) s += L", Android " + g_androidVersion;
+        return s + L"\n";
+    };
+    cb.tabletSerial = [] {
+        std::lock_guard<std::mutex> lock(g_infoMu);
+        return g_serial;
+    };
+    cb.tabletConnected = [] { return g_tabletReady.load(); };
+    // Windows is shutting down or signing out and ends this process right after: let
+    // the worker turn the tablet's screen off first (it has a few seconds).
+    cb.onEndSession = [] {
+        Log("Windows is ending the session");
+        g_quit = true;
+        for (int i = 0; i < 45 && !g_hostDone; i++) Sleep(100);
     };
     if (tray.Create(inst, cb)) g_tray = &tray;
     else Log("Notification-area icon unavailable");

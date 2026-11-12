@@ -37,6 +37,16 @@ std::wstring Settings::DataDir() {
     return dir;
 }
 
+std::wstring Settings::ReadText(const wchar_t* key) {
+    wchar_t value[128] = {};
+    GetPrivateProfileStringW(kSection, key, L"", value, 128, IniPath().c_str());
+    return value;
+}
+
+void Settings::WriteText(const wchar_t* key, const std::wstring& value) {
+    WritePrivateProfileStringW(kSection, key, value.c_str(), IniPath().c_str());
+}
+
 bool Settings::SaverActive() const {
     if (batterySaver == kSaverAlways) return true;
     if (batterySaver == kSaverOff) return false;
@@ -66,8 +76,12 @@ void Settings::Load() {
     startWithWindows = ReadBool(L"StartWithWindows", false);
     moveWindowsBack = ReadBool(L"MoveWindowsBack", true);
     restoreWindows = ReadBool(L"RestoreWindows", true);
-    int restore = int(GetPrivateProfileIntW(kSection, L"RestoreScreenMode", -1, IniPath().c_str()));
+    // A new install starts with Extend: after an uninstall (which turns the tablet's screen off
+    // with "PC screen only") the tablet would otherwise only mirror.
+    int restore = int(GetPrivateProfileIntW(kSection, L"RestoreScreenMode", 0, IniPath().c_str()));
     restoreMode = (restore == 0 || restore == 1 || restore == 3) ? restore : -1;
+    streamOn = ReadBool(L"StreamToTablet", true);
+    screenOurs = ReadBool(L"TabletScreenOurs", true);
     int saver = GetPrivateProfileIntW(kSection, L"BatterySaver", kSaverOff, IniPath().c_str());
     batterySaver = (saver >= kSaverOnBattery && saver <= kSaverOff) ? saver : kSaverOff;
     int orient = GetPrivateProfileIntW(kSection, L"Orientation", 0, IniPath().c_str());
@@ -82,6 +96,8 @@ void Settings::Save() const {
     WriteInt(L"MoveWindowsBack", moveWindowsBack ? 1 : 0);
     WriteInt(L"RestoreWindows", restoreWindows ? 1 : 0);
     WriteInt(L"RestoreScreenMode", restoreMode.load());
+    WriteInt(L"StreamToTablet", streamOn ? 1 : 0);
+    WriteInt(L"TabletScreenOurs", screenOurs ? 1 : 0);
     WriteInt(L"BatterySaver", batterySaver);
     WriteInt(L"Orientation", orientation);
 }

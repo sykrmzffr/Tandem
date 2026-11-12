@@ -19,6 +19,7 @@ object Protocol {
     const val PING = 9
     const val PONG = 10
     const val ORIENTATION = 11
+    const val PAUSED = 12
 
     const val ORIENT_AUTO = 0
     const val ORIENT_LANDSCAPE = 1

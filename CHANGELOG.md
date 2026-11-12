@@ -2,7 +2,56 @@
 
 All notable changes to Tandem (called FreeDisplay up to version 1.2.0). Versions follow [Semantic Versioning](https://semver.org/).
 
-## [1.3.1] - 2026-10-27
+## [1.3.2] - 2026-11-13
+
+The first release since 1.3.0: it includes everything listed under 1.3.1, which
+was not published on its own.
+
+### Added
+- **Stream to tablet** switch in the settings window and tray menu. Off stops
+  the stream, moves windows back and turns the tablet's screen off, like
+  unplugging, while the tablet stays connected (for charging, say). The tablet
+  shows "Paused on the PC" and may go to sleep. On brings the screen, the
+  stream and the windows back. The switch is remembered across restarts.
+- **Restart tablet app** button next to **Restart app**, and in the tray menu.
+- **The tablet's screen follows Tandem.** When Tandem closes (Quit, uninstall,
+  Windows shutting down or signing out), it moves the windows back and turns
+  the tablet's screen off instead of leaving an empty screen behind. A screen
+  that was already on before Tandem started is left on. Restarting or updating
+  Tandem keeps the screen and its windows.
+- **Update notice.** Tandem looks for a newer release shortly after it starts
+  and once a day, and offers **Install now**, **Later** or **Skip this
+  version**. Without internet it stays quiet.
+- **Send feedback** in the settings window and tray menu, and **Report a
+  problem** on the tablet's waiting screen: opens a GitHub issue in the browser,
+  filled in with versions, screens, driver state, tablet details and the last
+  log lines (without your Windows user name or the tablet's serial number).
+  Nothing is sent until you submit it. Needs a GitHub account.
+
+### Changed
+- The settings window is more compact (labels beside their fields), so it also
+  fits a 1080p screen at 150% scaling.
+- Tray menu and settings window use the same wording, and every item has its
+  own shortcut letter.
+- Update downloads are removed from the temporary folder after installing.
+
+### Fixed
+- If no video decoder on the tablet would start, the message saying why was
+  hidden again at once, leaving a black screen.
+- With a monitor attached, unplugging the tablet and then the monitor left
+  Windows on "PC screen only"; the returning tablet then only mirrored the
+  laptop. Its screen now comes back.
+- A tablet app updated on the tablet itself (newer than the PC's) made Tandem
+  try to install its older copy over it, which Android refuses, so the tablet
+  never connected. Tandem now uses the newer app.
+- A tablet app and PC app that do not match now say so in the status line.
+
+### Upgrading
+- Install over your current version (or use **Check for updates** from 1.3.1
+  builds); settings are kept and the tablet app updates when the tablet next
+  connects. No restart of Windows is needed.
+
+## [1.3.1] - 2026-10-27 (not published separately; part of 1.3.2)
 
 ### Added
 - **Check for updates** in the settings window and tray menu: if a newer
@@ -147,7 +196,8 @@ First release.
   rights, starts with Windows, installs and updates the tablet app by itself.
 - Tray menu: touch and pen switches, video quality presets, start with Windows.
 
-[1.3.1]: https://github.com/sykrmzffr/Tandem/compare/v1.3.0...v1.3.1
+[1.3.2]: https://github.com/sykrmzffr/Tandem/compare/v1.3.0...v1.3.2
+[1.3.1]: https://github.com/sykrmzffr/Tandem/compare/v1.3.0...v1.3.2
 [1.3.0]: https://github.com/sykrmzffr/Tandem/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/sykrmzffr/Tandem/compare/v1.1.2...v1.2.0
 [1.1.2]: https://github.com/sykrmzffr/Tandem/compare/v1.1.1...v1.1.2

@@ -312,6 +312,13 @@ Health CheckHealth() {
                                            h.state == State::Running || GetTickCount64() < 3 * 60 * 1000 ? 1 : 0);
     h.restartPending = RestartPending() || (h.state == State::Running && runningAtStart == 0);
     if (h.state == State::Running) h.screen = VirtualMonitor::ScreenState();
+#ifdef TANDEM_TEST
+    const std::wstring fault = TestFault();
+    if (fault == L"missing") h = Health{};
+    if (fault == L"disabled") h = Health{State::Disabled, CM_PROB_DISABLED};
+    if (fault == L"failed") h = Health{State::Failed, CM_PROB_FAILED_START};
+    if (fault == L"late") h.restartPending = true;
+#endif
     return h;
 }
 

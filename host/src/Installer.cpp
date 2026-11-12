@@ -233,7 +233,7 @@ bool PreparePortable() {
 }
 
 namespace {
-bool StopInstance(const wchar_t* trayClass, const wchar_t* mutexName, DWORD timeoutMs) {
+bool StopInstance(const wchar_t* trayClass, const wchar_t* mutexName, DWORD timeoutMs, bool handover = false) {
     HWND hwnd = FindWindowW(trayClass, nullptr);
     if (!hwnd) {
         // No tray window: either nothing is running or it has no icon yet.
@@ -248,7 +248,7 @@ bool StopInstance(const wchar_t* trayClass, const wchar_t* mutexName, DWORD time
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid == GetCurrentProcessId()) return true;
     HANDLE proc = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, pid);
-    PostMessageW(hwnd, kQuitMsg, 0, 0);
+    PostMessageW(hwnd, kQuitMsg, handover ? 1 : 0, 0);
     if (!proc) {
         Sleep(2000);
         return !FindWindowW(trayClass, nullptr);
@@ -264,7 +264,9 @@ bool StopInstance(const wchar_t* trayClass, const wchar_t* mutexName, DWORD time
 }
 } // namespace
 
-bool StopRunningInstance(DWORD timeoutMs) { return StopInstance(L"TandemTray", L"Local\\TandemHost", timeoutMs); }
+bool StopRunningInstance(DWORD timeoutMs, bool handover) {
+    return StopInstance(L"TandemTray", L"Local\\TandemHost", timeoutMs, handover);
+}
 
 void RemoveFreeDisplay() {
     StopInstance(L"FreeDisplayTray", L"Local\\FreeDisplayHost", 5000);
@@ -287,7 +289,7 @@ bool Install(bool quiet, bool launch) {
     std::wstring dir = InstallDir();
     std::wstring exe = dir + kExeName;
     RemoveFreeDisplay();
-    if (!StopRunningInstance()) {
+    if (!StopRunningInstance(10000, launch)) {
         Message(quiet, L"Tandem is running and could not be closed. Quit it from its icon in the "
                        L"notification area, then try again.", MB_ICONWARNING);
         return false;

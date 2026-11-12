@@ -22,6 +22,7 @@ enum MsgType : uint8_t {
     kPing = 9,        // host -> tablet: u64 hostUs
     kPong = 10,       // tablet -> host: the ping payload echoed back
     kOrientation = 11, // host -> tablet: u8 Orientation
+    kPaused = 12,      // host -> tablet: streaming is switched off on the PC
 };
 
 enum Orientation : uint8_t { kOrientAuto = 0, kOrientLandscape = 1, kOrientPortrait = 2 };

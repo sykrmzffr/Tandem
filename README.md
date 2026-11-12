@@ -103,6 +103,14 @@ settings window; right-click it for the same options as a menu, plus **Quit**:
   **Open Device Manager** or **Restart PC**). Tandem keeps checking while it
   waits for a tablet.
 
+- **Stream to tablet**: the main switch. Turn it off to keep the tablet plugged
+  in (charging, copying files) without it being a screen: the stream stops,
+  windows move back to the main screen and the tablet's screen leaves the
+  desktop, as on an unplug. The tablet shows **Paused on the PC** and may go to
+  sleep. Turn it on again and the screen, the stream and the windows come back.
+  The switch is remembered, also across restarts, so Tandem never starts
+  streaming again behind your back; while it is off, the tablet, the tray icon
+  and the settings window all say so.
 - **Touch input / Pen input**: turn tablet input on or off (applies instantly).
 - **Video quality**: Sharp (full resolution), Balanced (75%, default),
   Fastest (50%). Lower = less latency, softer text.
@@ -140,7 +148,28 @@ settings window; right-click it for the same options as a menu, plus **Quit**:
   one, downloads and installs it (Tandem restarts and keeps your settings; the
   tablet app updates the next time it connects). The tablet's waiting screen
   has a **Check for updates** button too.
-- **Start with Windows**, **Open log**, **Restart app**.
+- Tandem also looks for a newer release by itself: half a minute after it
+  starts and then once a day (one small request to GitHub, nothing about you
+  is sent). When there is one it asks: **Install now**, **Later** (asks again
+  the next day) or **Skip this version**. Without internet it stays quiet.
+- **Send feedback**: opens a new issue on GitHub in your browser, already
+  filled in with the Tandem and Windows versions, GPU and encoder, your
+  screens, the display driver's state, the tablet's model and the last lines
+  of the log. Your Windows user name and the tablet's serial number are taken
+  out. Nothing is sent until you press **Submit** on that page, and you can
+  edit everything first. You need a (free) GitHub account. **Open log folder**
+  in the same box takes you to the full log, to attach it. The tablet's
+  waiting screen has **Report a problem**, which does the same with the
+  tablet's details.
+- **Start with Windows**, **Open log**.
+- **Restart app** restarts Tandem on the PC; **Restart tablet app** closes and
+  reopens the app on the tablet (for example when its picture is stuck).
+
+When Tandem closes (Quit, uninstall, Windows shutting down or signing out), it
+moves the windows back and turns the tablet's screen off, so no empty screen is
+left behind. If that screen was already on before Tandem started (you or
+another app turned it on), Tandem leaves it as it found it. Restarting or
+updating Tandem keeps the screen and the windows on it.
 
 `Tandem.exe --move-windows-back` does the window move by hand.
 
@@ -150,7 +179,8 @@ Settings: `%APPDATA%\Tandem\settings.ini`. Log: `%APPDATA%\Tandem\host.log`.
 
 Command-line options for testing: `--console`, `--list`, `--display N`,
 `--fps N`, `--bitrate Mbps`, `--scale PERCENT`, `--encoder auto|amf|nvenc|mf`,
-`--no-install`.
+`--no-install`. [TESTING.md](TESTING.md) lists the release checklist and the
+test-only build used for cases that cannot be staged by hand.
 
 ## Build
 

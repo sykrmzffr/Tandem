@@ -8,6 +8,10 @@
 #include "Updater.h"
 #include "Util.h"
 #include "VirtualMonitor.h"
+#include <shellscalingapi.h>
+#include <share.h>
+#include <cctype>
+#include <ctime>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -19,6 +23,10 @@ constexpr UINT kUpdateCheckedMsg = WM_APP + 6;    // lParam: UpdateResult*
 constexpr UINT kUpdateDownloadedMsg = WM_APP + 7; // lParam: UpdateResult*
 constexpr UINT kIconId = 1;
 constexpr UINT_PTR kStatusTimer = 1;
+constexpr UINT_PTR kUpdateTimer = 2; // on the tray window: look for a newer release
+constexpr UINT kUpdateFirstMs = 30 * 1000, kUpdateEveryMs = 24 * 60 * 60 * 1000;
+constexpr const wchar_t* kIssueUrl = L"https://github.com/sykrmzffr/Tandem/issues/new";
+constexpr size_t kMaxReportUrl = 7000; // longer links are cut off by browsers or GitHub
 
 enum MenuId : UINT {
     kIdTouch = 100,
@@ -42,6 +50,9 @@ enum MenuId : UINT {
     kIdLog,
     kIdUpdates,
     kIdQuit,
+    kIdStream,
+    kIdRestartTablet,
+    kIdFeedback,
 };
 
 // Settings window controls.
@@ -68,6 +79,9 @@ enum ControlId : int {
     kCtlUpdates,
     kCtlDriver,
     kCtlDriverFix,
+    kCtlStream,
+    kCtlRestartTablet,
+    kCtlFeedback,
 };
 
 constexpr int kQualityValues[] = {100, 75, 50};
@@ -96,6 +110,7 @@ void SetMode(int mode) {
 }
 
 struct UpdateResult {
+    bool manual = true; // asked for by the user: also report errors and "up to date"
     bool ok = false;
     updater::Release release;
     std::wstring error, path;
@@ -103,6 +118,135 @@ struct UpdateResult {
 
 void OpenLog() {
     ShellExecuteW(nullptr, L"open", (Settings::DataDir() + L"host.log").c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+// A message with its own button labels. Returns the index of the button chosen, or
+// -1 when the box was closed. The text may hold <a href="...">links</a>.
+int Choose(HWND owner, const std::wstring& heading, const std::wstring& text,
+           std::initializer_list<const wchar_t*> labels) {
+    std::vector<TASKDIALOG_BUTTON> buttons;
+    for (const wchar_t* label : labels) buttons.push_back({100 + int(buttons.size()), label});
+    TASKDIALOGCONFIG c{sizeof c};
+    c.hwndParent = owner;
+    c.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_ENABLE_HYPERLINKS | TDF_SIZE_TO_CONTENT |
+                (owner ? TDF_POSITION_RELATIVE_TO_WINDOW : 0);
+    c.pszWindowTitle = L"Tandem";
+    c.pszMainIcon = TD_INFORMATION_ICON;
+    c.pszMainInstruction = heading.c_str();
+    c.pszContent = text.c_str();
+    c.cButtons = UINT(buttons.size());
+    c.pButtons = buttons.data();
+    c.nDefaultButton = 100;
+    c.pfCallback = [](HWND, UINT msg, WPARAM, LPARAM lp, LONG_PTR) -> HRESULT {
+        if (msg == TDN_HYPERLINK_CLICKED)
+            ShellExecuteW(nullptr, L"open", reinterpret_cast<const wchar_t*>(lp), nullptr, nullptr, SW_SHOWNORMAL);
+        return S_OK;
+    };
+    int pressed = 0;
+    if (FAILED(TaskDialogIndirect(&c, &pressed, nullptr, nullptr))) return -1;
+    return pressed >= 100 ? pressed - 100 : -1;
+}
+
+// ---- problem report -------------------------------------------------------
+
+std::wstring WindowsVersion() {
+    auto read = [](const wchar_t* name) {
+        wchar_t text[64] = {};
+        DWORD size = sizeof text;
+        RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", name, RRF_RT_REG_SZ, nullptr,
+                     text, &size);
+        return std::wstring(text);
+    };
+    DWORD ubr = 0, size = sizeof ubr;
+    RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", L"UBR", RRF_RT_REG_DWORD, nullptr,
+                 &ubr, &size);
+    std::wstring build = read(L"CurrentBuild");
+    return std::wstring(_wtoi(build.c_str()) >= 22000 ? L"Windows 11 " : L"Windows 10 ") + read(L"DisplayVersion") +
+           L" (build " + build + L"." + std::to_wstring(ubr) + L")";
+}
+
+// "2: 1920x1200 at 125%, 3200x2136 at 250% (tablet)"
+std::wstring ScreensText() {
+    struct Ctx {
+        std::wstring text, vdd;
+        int count = 0;
+    } ctx;
+    ctx.vdd = VirtualMonitor::Find();
+    EnumDisplayMonitors(
+        nullptr, nullptr,
+        [](HMONITOR m, HDC, LPRECT, LPARAM lp) -> BOOL {
+            auto* c = reinterpret_cast<Ctx*>(lp);
+            MONITORINFOEXW mi{};
+            mi.cbSize = sizeof mi;
+            UINT dpiX = 96, dpiY = 96;
+            if (!GetMonitorInfoW(m, &mi)) return TRUE;
+            GetDpiForMonitor(m, MDT_EFFECTIVE_DPI, &dpiX, &dpiY);
+            c->text += (c->count++ ? L", " : L"") + std::to_wstring(mi.rcMonitor.right - mi.rcMonitor.left) + L"x" +
+                       std::to_wstring(mi.rcMonitor.bottom - mi.rcMonitor.top) + L" at " +
+                       std::to_wstring(MulDiv(int(dpiX), 100, 96)) + L"%" + (c->vdd == mi.szDevice ? L" (tablet)" : L"");
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&ctx));
+    return std::to_wstring(ctx.count) + L": " + ctx.text;
+}
+
+// The last lines of the log, without what could identify the user: the Windows user
+// name in paths and the tablet's serial number.
+std::vector<std::string> LogTail(size_t maxLines, const std::string& serial) {
+    std::vector<std::string> lines;
+    FILE* f = _wfsopen((Settings::DataDir() + L"host.log").c_str(), L"rb", _SH_DENYNO);
+    if (!f) return lines;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, size > 32768 ? size - 32768 : 0, SEEK_SET);
+    std::string text(size_t(size > 32768 ? 32768 : size), '\0');
+    text.resize(fread(text.data(), 1, text.size(), f));
+    fclose(f);
+    for (size_t at = 0; at < text.size();) {
+        size_t end = text.find('\n', at);
+        if (end == std::string::npos) end = text.size();
+        std::string line = text.substr(at, end - at);
+        at = end + 1;
+        while (!line.empty() && line.back() == '\r') line.pop_back();
+        for (size_t u = line.find("\\Users\\"); u != std::string::npos; u = line.find("\\Users\\", u + 7)) {
+            size_t nameEnd = line.find('\\', u + 7);
+            line.replace(u + 7, (nameEnd == std::string::npos ? line.size() : nameEnd) - (u + 7), "...");
+        }
+        for (size_t s = serial.empty() ? std::string::npos : line.find(serial); s != std::string::npos;
+             s = line.find(serial, s + 3))
+            line.replace(s, serial.size(), "...");
+        if (!line.empty()) lines.push_back(line);
+    }
+    if (lines.size() > maxLines) lines.erase(lines.begin(), lines.end() - maxLines);
+    return lines;
+}
+
+std::string UrlEncode(const std::string& s) {
+    static const char hex[] = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char ch : s) {
+        if (isalnum(ch) || ch == '-' || ch == '_' || ch == '.' || ch == '~') out += char(ch);
+        else (out += '%') += hex[ch >> 4], out += hex[ch & 15];
+    }
+    return out;
+}
+
+// The link that opens a filled-in GitHub issue. Log lines are dropped from the oldest
+// until it fits.
+std::wstring ReportUrl(const std::wstring& sessionInfo, const std::string& serial) {
+    driver::Health health = driver::CheckHealth();
+    std::string head = Narrow(L"Tandem " FD_VERSION_WSTR L" on " + WindowsVersion() + L"\n" + sessionInfo + L"Screens: " +
+                              ScreensText() + L"\n" + health.Summary() + L"\n\n") +
+                       "### What happened, and what did you expect?\n\n\n\n### Log (last lines)\n";
+    std::vector<std::string> lines = LogTail(40, serial);
+    const std::string prefix = Narrow(kIssueUrl) + "?title=" + UrlEncode("Tandem " FD_VERSION_STR ": ") + "&body=";
+    for (;;) {
+        std::string body = head + "```\n";
+        for (const std::string& line : lines) body += line + "\n";
+        std::string url = prefix + UrlEncode(body + "```\n");
+        if (url.size() <= kMaxReportUrl || lines.empty()) return Widen(url);
+        lines.erase(lines.begin());
+    }
 }
 } // namespace
 
@@ -141,6 +285,16 @@ bool Tray::Create(HINSTANCE inst, Callbacks cb) {
     if (!Shell_NotifyIconW(NIM_ADD, &nid)) return false;
     nid.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &nid);
+
+    // Look for a newer release shortly after starting, then daily. Only an installed
+    // copy does: "Install now" would install one that was started just to try it.
+    UINT firstMs = kUpdateFirstMs;
+    bool installed = _wcsicmp(ExeDir().c_str(), installer::InstallDir().c_str()) == 0;
+#ifdef TANDEM_TEST // seconds until the first check and between checks, from any folder
+    wchar_t fake[16];
+    if (GetEnvironmentVariableW(L"TANDEM_TEST_UPDATE_SECONDS", fake, 16)) firstMs = UINT(_wtoi(fake)) * 1000, installed = true;
+#endif
+    if (installed) SetTimer(hwnd_, kUpdateTimer, firstMs, nullptr);
     return true;
 }
 
@@ -202,10 +356,10 @@ void Tray::ApplyStatus() {
 void Tray::SettingsChanged(int oldQuality, int oldOrientation) {
     Settings& s = AppSettings();
     s.Save();
-    Log("Settings: touch=%d pen=%d quality=%d%% batterySaver=%d startWithWindows=%d moveWindowsBack=%d "
-        "restoreWindows=%d",
-        int(s.touch), int(s.pen), int(s.qualityPct), int(s.batterySaver), int(s.startWithWindows),
-        int(s.moveWindowsBack), int(s.restoreWindows));
+    Log("Settings: streamToTablet=%d touch=%d pen=%d quality=%d%% batterySaver=%d orientation=%d "
+        "startWithWindows=%d moveWindowsBack=%d restoreWindows=%d",
+        int(s.streamOn), int(s.touch), int(s.pen), int(s.qualityPct), int(s.batterySaver), int(s.orientation),
+        int(s.startWithWindows), int(s.moveWindowsBack), int(s.restoreWindows));
     if ((s.qualityPct != oldQuality || s.orientation != oldOrientation) && cb_.onQualityChanged)
         cb_.onQualityChanged();
     // Battery saver changes are picked up by the stream itself (it restarts at the new rate).
@@ -231,6 +385,8 @@ void Tray::ShowMenu() {
 
     int mode = CurrentMode();
     HMENU screen = CreatePopupMenu();
+    // While streaming is off the tablet's screen stays off, so there is no mode to pick.
+    const UINT modeGray = s.streamOn ? 0 : MF_GRAYED;
     AppendMenuW(screen, MF_STRING | (mode == 0 ? MF_CHECKED : 0), kIdExtend, L"&Extend (second screen)");
     AppendMenuW(screen, MF_STRING | (mode == 1 ? MF_CHECKED : 0), kIdDuplicate, L"&Duplicate (mirror)");
 
@@ -244,22 +400,27 @@ void Tray::ShowMenu() {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kIdSettings, L"&Settings...");
     SetMenuDefaultItem(menu, kIdSettings, FALSE);
+    AppendMenuW(menu, MF_STRING | (s.streamOn ? MF_CHECKED : 0), kIdStream, L"Strea&m to tablet");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | (s.touch ? MF_CHECKED : 0), kIdTouch, L"&Touch input");
     AppendMenuW(menu, MF_STRING | (s.pen ? MF_CHECKED : 0), kIdPen, L"&Pen input");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(quality), L"&Video quality");
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(screen), L"Screen m&ode");
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(orient), L"&Orientation");
+    AppendMenuW(menu, MF_POPUP | modeGray, reinterpret_cast<UINT_PTR>(screen), L"Screen m&ode");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(orient), L"Tablet orie&ntation");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(saver), L"&Battery saver");
     AppendMenuW(menu, MF_STRING | (s.moveWindowsBack ? MF_CHECKED : 0), kIdMoveBack,
-                L"&Turn off the tablet screen when it disconnects");
+                L"Turn off the tablet screen when it dis&connects");
     AppendMenuW(menu, MF_STRING | (s.restoreWindows ? MF_CHECKED : 0), kIdRestoreWindows,
                 L"Move &windows back to the tablet when it reconnects");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING | (s.startWithWindows ? MF_CHECKED : 0), kIdAutostart, L"Start with &Windows");
+    AppendMenuW(menu, MF_STRING | (s.startWithWindows ? MF_CHECKED : 0), kIdAutostart, L"St&art with Windows");
     AppendMenuW(menu, MF_STRING, kIdLog, L"Open &log");
     AppendMenuW(menu, MF_STRING | (updateBusy_ ? MF_GRAYED : 0), kIdUpdates, L"Check for &updates...");
+    AppendMenuW(menu, MF_STRING, kIdFeedback, L"Send &feedback...");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kIdRestart, L"&Restart Tandem");
+    AppendMenuW(menu, MF_STRING | (cb_.tabletConnected && cb_.tabletConnected() ? 0 : MF_GRAYED), kIdRestartTablet,
+                L"R&estart tablet app");
     AppendMenuW(menu, MF_STRING, kIdQuit, L"&Quit Tandem");
 
     POINT pt;
@@ -273,6 +434,7 @@ void Tray::ShowMenu() {
     case kIdOrientAuto: s.orientation = 0; break;
     case kIdOrientLandscape: s.orientation = 1; break;
     case kIdOrientPortrait: s.orientation = 2; break;
+    case kIdStream: s.streamOn = !s.streamOn; break;
     case kIdTouch: s.touch = !s.touch; break;
     case kIdPen: s.pen = !s.pen; break;
     case kIdSharp: s.qualityPct = 100; break;
@@ -292,8 +454,12 @@ void Tray::ShowMenu() {
     case kIdRestart:
         if (cb_.onRestart) cb_.onRestart();
         return;
+    case kIdRestartTablet:
+        if (cb_.onRestartTablet) cb_.onRestartTablet();
+        return;
     case kIdLog: OpenLog(); return;
     case kIdUpdates: CheckForUpdates(); return;
+    case kIdFeedback: SendFeedback(); return;
     case kIdQuit:
         if (cb_.onQuit) cb_.onQuit();
         PostQuitMessage(0);
@@ -324,6 +490,7 @@ void Tray::ShowSettings() {
     add(L"STATIC", L"Version " FD_VERSION_WSTR, SS_RIGHT, kCtlVersion);
     add(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, kCtlStatus);
     add(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, kCtlDriver);
+    add(L"BUTTON", L"&Stream to tablet", BS_AUTOCHECKBOX | WS_TABSTOP, kCtlStream);
     add(L"STATIC", L"Tablet input", SS_LEFT, kCtlInputLabel);
     add(L"BUTTON", L"&Touch", BS_AUTOCHECKBOX | WS_TABSTOP, kCtlTouch);
     add(L"BUTTON", L"&Pen", BS_AUTOCHECKBOX | WS_TABSTOP, kCtlPen);
@@ -333,17 +500,19 @@ void Tray::ShowSettings() {
     add(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, kCtlSaver);
     add(L"STATIC", L"Screen m&ode", SS_LEFT, kCtlModeLabel);
     add(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, kCtlMode);
-    add(L"STATIC", L"Tablet o&rientation", SS_LEFT, kCtlOrientLabel);
+    add(L"STATIC", L"Tablet orie&ntation", SS_LEFT, kCtlOrientLabel);
     add(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, kCtlOrient);
-    add(L"BUTTON", L"&Turn off the tablet screen when it disconnects", BS_AUTOCHECKBOX | WS_TABSTOP,
+    add(L"BUTTON", L"Turn off the tablet screen when it dis&connects", BS_AUTOCHECKBOX | WS_TABSTOP,
         kCtlMoveBack);
     add(L"BUTTON", L"&Move windows back to the tablet when it reconnects", BS_AUTOCHECKBOX | WS_TABSTOP,
         kCtlRestoreWindows);
     add(L"BUTTON", L"Start with &Windows", BS_AUTOCHECKBOX | WS_TABSTOP, kCtlAutostart);
     add(L"BUTTON", L"Check for &updates", BS_PUSHBUTTON | WS_TABSTOP, kCtlUpdates);
     add(L"BUTTON", L"", BS_PUSHBUTTON | WS_TABSTOP, kCtlDriverFix);
-    add(L"BUTTON", L"Open &log", BS_PUSHBUTTON | WS_TABSTOP, kCtlLog);
     add(L"BUTTON", L"&Restart app", BS_PUSHBUTTON | WS_TABSTOP, kCtlRestart);
+    add(L"BUTTON", L"Restart tablet &app", BS_PUSHBUTTON | WS_TABSTOP, kCtlRestartTablet);
+    add(L"BUTTON", L"Open &log", BS_PUSHBUTTON | WS_TABSTOP, kCtlLog);
+    add(L"BUTTON", L"Send &feedback", BS_PUSHBUTTON | WS_TABSTOP, kCtlFeedback);
     add(L"BUTTON", L"Close", BS_DEFPUSHBUTTON | WS_TABSTOP, IDCANCEL);
     for (const wchar_t* name : kQualityNames)
         SendDlgItemMessageW(settings_, kCtlQuality, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
@@ -377,6 +546,10 @@ void Tray::ShowSettings() {
 // Positions the controls for the window's current DPI (all sizes in 96-DPI units).
 void Tray::LayoutSettings() {
     UINT dpi = GetDpiForWindow(settings_);
+#ifdef TANDEM_TEST // lay the window out as at another scaling: TANDEM_TEST_DPI=96..240
+    wchar_t fake[8];
+    if (GetEnvironmentVariableW(L"TANDEM_TEST_DPI", fake, 8)) dpi = UINT(_wtoi(fake));
+#endif
     auto px = [dpi](int v) { return MulDiv(v, int(dpi), 96); };
 
     NONCLIENTMETRICSW ncm{sizeof ncm};
@@ -389,7 +562,10 @@ void Tray::LayoutSettings() {
     title.lfWeight = FW_SEMIBOLD;
     titleFont_ = CreateFontIndirectW(&title);
 
-    const int margin = 20, width = 380, inner = width - 2 * margin;
+    // Labels on the left, their fields on the right; buttons in two columns.
+    const int margin = 20, width = 400, inner = width - 2 * margin;
+    const int labelW = 120, fieldX = margin + labelW, fieldW = inner - labelW;
+    const int half = (inner - 12) / 2, col2 = margin + half + 12;
     struct Place {
         int id, x, y, w, h;
     };
@@ -398,25 +574,28 @@ void Tray::LayoutSettings() {
         {kCtlVersion, width - margin - 120, 24, 120, 20},
         {kCtlStatus, margin, 50, inner, 36},
         {kCtlDriver, margin, 88, inner, 36},
-        {kCtlInputLabel, margin, 132, inner, 20},
-        {kCtlTouch, margin, 154, 120, 22},
-        {kCtlPen, margin + 130, 154, 120, 22},
-        {kCtlQualityLabel, margin, 188, inner, 20},
-        {kCtlQuality, margin, 210, inner, 200},
-        {kCtlSaverLabel, margin, 246, inner, 20},
-        {kCtlSaver, margin, 268, inner, 200},
-        {kCtlModeLabel, margin, 304, inner, 20},
-        {kCtlMode, margin, 326, inner, 200},
-        {kCtlOrientLabel, margin, 362, inner, 20},
-        {kCtlOrient, margin, 384, inner, 200},
-        {kCtlMoveBack, margin, 424, inner, 22},
-        {kCtlRestoreWindows, margin, 450, inner, 22},
-        {kCtlAutostart, margin, 476, inner, 22},
-        {kCtlUpdates, margin, 510, 160, 30},
-        {kCtlDriverFix, margin + 172, 510, inner - 172, 30},
-        {kCtlLog, margin, 552, 105, 30},
-        {kCtlRestart, margin + 117, 552, 106, 30},
-        {IDCANCEL, width - margin - 105, 552, 105, 30},
+        {kCtlStream, margin, 130, inner, 22},
+        {kCtlInputLabel, margin, 162, labelW, 20},
+        {kCtlTouch, fieldX, 160, 110, 22},
+        {kCtlPen, fieldX + 120, 160, 110, 22},
+        {kCtlQualityLabel, margin, 196, labelW, 20},
+        {kCtlQuality, fieldX, 192, fieldW, 200},
+        {kCtlSaverLabel, margin, 230, labelW, 20},
+        {kCtlSaver, fieldX, 226, fieldW, 200},
+        {kCtlModeLabel, margin, 264, labelW, 20},
+        {kCtlMode, fieldX, 260, fieldW, 200},
+        {kCtlOrientLabel, margin, 298, labelW, 20},
+        {kCtlOrient, fieldX, 294, fieldW, 200},
+        {kCtlMoveBack, margin, 332, inner, 22},
+        {kCtlRestoreWindows, margin, 358, inner, 22},
+        {kCtlAutostart, margin, 384, inner, 22},
+        {kCtlUpdates, margin, 418, half, 30},
+        {kCtlDriverFix, col2, 418, half, 30},
+        {kCtlRestart, margin, 456, half, 30},
+        {kCtlRestartTablet, col2, 456, half, 30},
+        {kCtlLog, margin, 494, 105, 30},
+        {kCtlFeedback, margin + 117, 494, 126, 30},
+        {IDCANCEL, width - margin - 105, 494, 105, 30},
     };
     for (const Place& p : places) {
         HWND c = GetDlgItem(settings_, p.id);
@@ -424,7 +603,7 @@ void Tray::LayoutSettings() {
         SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(p.id == kCtlTitle ? titleFont_ : font_), TRUE);
     }
 
-    RECT rc{0, 0, px(width), px(600)};
+    RECT rc{0, 0, px(width), px(542)};
     AdjustWindowRectExForDpi(&rc, GetWindowLongW(settings_, GWL_STYLE), FALSE, 0, dpi);
     SetWindowPos(settings_, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -432,6 +611,10 @@ void Tray::LayoutSettings() {
 
 void Tray::RefreshSettings() {
     Settings& s = AppSettings();
+    CheckDlgButton(settings_, kCtlStream, s.streamOn ? BST_CHECKED : BST_UNCHECKED);
+    // While streaming is off the tablet's screen stays off, so there is no mode to pick.
+    EnableWindow(GetDlgItem(settings_, kCtlMode), s.streamOn);
+    EnableWindow(GetDlgItem(settings_, kCtlRestartTablet), cb_.tabletConnected && cb_.tabletConnected());
     CheckDlgButton(settings_, kCtlTouch, s.touch ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(settings_, kCtlPen, s.pen ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(settings_, kCtlMoveBack, s.moveWindowsBack ? BST_CHECKED : BST_UNCHECKED);
@@ -451,6 +634,7 @@ void Tray::OnSettingsCommand(int id, int code) {
     int oldQuality = s.qualityPct, oldOrientation = s.orientation;
     auto checked = [&](int ctl) { return IsDlgButtonChecked(settings_, ctl) == BST_CHECKED; };
     switch (id) {
+    case kCtlStream: s.streamOn = checked(kCtlStream); break;
     case kCtlTouch: s.touch = checked(kCtlTouch); break;
     case kCtlPen: s.pen = checked(kCtlPen); break;
     case kCtlMoveBack: s.moveWindowsBack = checked(kCtlMoveBack); break;
@@ -483,6 +667,9 @@ void Tray::OnSettingsCommand(int id, int code) {
     case kCtlRestart:
         if (cb_.onRestart) cb_.onRestart();
         return;
+    case kCtlRestartTablet:
+        if (cb_.onRestartTablet) cb_.onRestartTablet();
+        return;
     case kCtlOrient: {
         if (code != CBN_SELCHANGE) return;
         LRESULT i = SendDlgItemMessageW(settings_, kCtlOrient, CB_GETCURSEL, 0, 0);
@@ -492,6 +679,7 @@ void Tray::OnSettingsCommand(int id, int code) {
     }
     case kCtlLog: OpenLog(); return;
     case kCtlUpdates: CheckForUpdates(); return;
+    case kCtlFeedback: SendFeedback(); return;
     case kCtlDriverFix: FixDriver(); return;
     case IDCANCEL: DestroyWindow(settings_); return;
     default: return;
@@ -521,6 +709,7 @@ LRESULT CALLBACK Tray::SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_TIMER:
         SetDlgItemTextW(hwnd, kCtlStatus, self->CurrentStatus().c_str());
+        EnableWindow(GetDlgItem(hwnd, kCtlRestartTablet), self->cb_.tabletConnected && self->cb_.tabletConnected());
         if (++self->timerTicks_ % 3 == 0) self->RefreshDriver();
         return 0;
     case WM_DPICHANGED: {
@@ -547,6 +736,8 @@ void Tray::RefreshDriver() {
     driver::Health h = driver::CheckHealth();
     driverOk_ = h.Ok();
     std::wstring text = h.Summary();
+    if (h.Ok() && h.screen == 1 && !AppSettings().streamOn)
+        text = L"Display driver: running, tablet screen off while streaming is paused";
     if (!h.Ok()) text += L". " + h.Advice() + L".";
     wchar_t old[512] = {};
     GetDlgItemTextW(settings_, kCtlDriver, old, 512);
@@ -587,12 +778,41 @@ void Tray::FixDriver() {
 
 // ---- updates --------------------------------------------------------------
 
-void Tray::CheckForUpdates() {
+void Tray::SendFeedback() {
+    int choice = Choose(settings_, L"Send feedback or report a problem",
+                        L"Tandem opens a GitHub page in your browser with a report already filled in: the versions, "
+                        L"your screens, the display driver's state and the last lines of the log (without your "
+                        L"Windows user name and the tablet's serial number).\n\n"
+                        L"Nothing is sent until you press Submit there, and you can edit everything first. You need "
+                        L"a GitHub account. To attach the whole log, drag host.log from the log folder into the report.",
+                        {L"Open the report page", L"Open log folder", L"Cancel"});
+    if (choice == 1) ShellExecuteW(nullptr, L"open", Settings::DataDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if (choice != 0) return;
+    std::wstring url = ReportUrl(cb_.reportInfo ? cb_.reportInfo() : L"", cb_.tabletSerial ? cb_.tabletSerial() : "");
+    Log("Feedback: opening the report page (%zu characters)", url.size());
+#ifdef TANDEM_TEST // write the link to a file instead of opening the browser
+    wchar_t file[MAX_PATH];
+    if (GetEnvironmentVariableW(L"TANDEM_TEST_FEEDBACK_FILE", file, MAX_PATH)) {
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, file, L"wb") == 0 && f) {
+            fputs(Narrow(url).c_str(), f);
+            fclose(f);
+        }
+        return;
+    }
+#endif
+    if (reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
+        MessageBoxW(settings_, L"Could not open the browser. You can report the problem at\n"
+                               L"github.com/sykrmzffr/Tandem/issues", L"Tandem", MB_ICONWARNING);
+}
+
+void Tray::CheckForUpdates(bool manual) {
     if (updateBusy_.exchange(true)) return;
     if (settings_) EnableWindow(GetDlgItem(settings_, kCtlUpdates), FALSE);
     HWND hwnd = hwnd_;
-    std::thread([hwnd] {
+    std::thread([hwnd, manual] {
         auto* r = new UpdateResult;
+        r->manual = manual;
         r->ok = updater::Latest(r->release, r->error);
         if (!PostMessageW(hwnd, kUpdateCheckedMsg, 0, reinterpret_cast<LPARAM>(r))) delete r;
     }).detach();
@@ -606,34 +826,46 @@ void Tray::OnUpdateChecked(LPARAM lp) {
         if (settings_) EnableWindow(GetDlgItem(settings_, kCtlUpdates), TRUE);
     };
     const UINT flags = MB_SETFOREGROUND;
+    // The check Tandem makes on its own says nothing unless there is a newer version.
     if (!r->ok) {
         Log("Update check failed: %s", Narrow(r->error).c_str());
-        MessageBoxW(owner, (L"Could not check for updates: " + r->error + L".").c_str(), L"Tandem",
-                    flags | MB_ICONWARNING);
+        if (r->manual)
+            MessageBoxW(owner, (L"Could not check for updates: " + r->error + L".").c_str(), L"Tandem",
+                        flags | MB_ICONWARNING);
         return done();
     }
-    Log("Update check: latest is %s, this is " FD_VERSION_STR, Narrow(r->release.version).c_str());
-    if (!updater::IsNewer(r->release.version)) {
-        MessageBoxW(owner, L"You have the latest version of Tandem (" FD_VERSION_WSTR L").", L"Tandem",
-                    flags | MB_ICONINFORMATION);
+    const std::wstring& version = r->release.version;
+    Log("Update check: latest is %s, this is " FD_VERSION_STR, Narrow(version).c_str());
+    if (!updater::IsNewer(version)) {
+        if (r->manual)
+            MessageBoxW(owner, L"You have the latest version of Tandem (" FD_VERSION_WSTR L").", L"Tandem",
+                        flags | MB_ICONINFORMATION);
         return done();
     }
-    std::wstring text = L"Tandem " + r->release.version + L" is available (you have " FD_VERSION_WSTR L").\n\n";
-    if (r->release.exeUrl.empty()) {
-        if (MessageBoxW(owner, (text + L"Open the download page?").c_str(), L"Tandem",
-                        flags | MB_YESNO | MB_ICONINFORMATION) == IDYES)
-            ShellExecuteW(nullptr, L"open", r->release.pageUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-        return done();
+    if (!r->manual) {
+        // Not for a version the user skipped, and once a day at most.
+        const std::wstring offered = version + L" " + std::to_wstring(time(nullptr) / 86400);
+        if (version == Settings::ReadText(L"UpdateSkipped") || offered == Settings::ReadText(L"UpdateOffered")) {
+            Log("Update %s: skipped by the user or already offered today", Narrow(version).c_str());
+            return done();
+        }
+        Settings::WriteText(L"UpdateOffered", offered);
     }
-    int choice = MessageBoxW(owner,
-                             (text + L"Download and install it now? Tandem restarts by itself and keeps your "
-                                     L"settings; the tablet app updates the next time it connects.\n\n"
-                                     L"Choose No to see what's new first.")
-                                 .c_str(),
-                             L"Tandem", flags | MB_YESNOCANCEL | MB_ICONQUESTION);
-    if (choice == IDNO && !r->release.pageUrl.empty())
+    const bool canInstall = !r->release.exeUrl.empty();
+    std::wstring text = L"You have " FD_VERSION_WSTR L". ";
+    text += canInstall ? L"Tandem downloads and installs the update, restarts by itself and keeps your settings; "
+                         L"the tablet app updates the next time it connects."
+                       : L"Download it from the release page.";
+    if (!r->release.pageUrl.empty()) text += L"\n\n<a href=\"" + r->release.pageUrl + L"\">What's new</a>";
+    int choice = Choose(owner, L"Tandem " + version + L" is available", text,
+                        {canInstall ? L"Install now" : L"Open the download page", L"Later", L"Skip this version"});
+    if (choice == 2) {
+        Settings::WriteText(L"UpdateSkipped", version);
+        Log("Update %s: skipped by the user", Narrow(version).c_str());
+    }
+    if (choice == 0 && !canInstall)
         ShellExecuteW(nullptr, L"open", r->release.pageUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-    if (choice != IDYES) return done();
+    if (choice != 0 || !canInstall) return done();
 
     SetStatus(L"Downloading Tandem " + r->release.version + L"...");
     wchar_t temp[MAX_PATH];
@@ -685,6 +917,18 @@ LRESULT CALLBACK Tray::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (self->cb_.onDisplayChanged) self->cb_.onDisplayChanged();
             return 0;
         }
+        if (msg == WM_TIMER && wp == kUpdateTimer) {
+            UINT everyMs = kUpdateEveryMs;
+#ifdef TANDEM_TEST
+            wchar_t fake[16];
+            if (GetEnvironmentVariableW(L"TANDEM_TEST_UPDATE_SECONDS", fake, 16)) everyMs = UINT(_wtoi(fake)) * 1000;
+#endif
+            SetTimer(hwnd, kUpdateTimer, everyMs, nullptr);
+            // Not on the very first start: Tandem was installed a moment ago.
+            if (Settings::ReadText(L"UpdateChecks").empty()) Settings::WriteText(L"UpdateChecks", L"1");
+            else self->CheckForUpdates(false);
+            return 0;
+        }
         if (msg == kUpdateCheckedMsg) {
             self->OnUpdateChecked(lp);
             return 0;
@@ -697,7 +941,12 @@ LRESULT CALLBACK Tray::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             self->ShowSettings();
             return 0;
         }
+        if (msg == WM_ENDSESSION && wp) { // Windows ends this process once we return
+            if (self->cb_.onEndSession) self->cb_.onEndSession();
+            return 0;
+        }
         if (msg == installer::kQuitMsg) { // an installer or uninstaller wants us gone
+            if (wp && self->cb_.onHandover) self->cb_.onHandover();
             if (self->cb_.onQuit) self->cb_.onQuit();
             PostQuitMessage(0);
             return 0;

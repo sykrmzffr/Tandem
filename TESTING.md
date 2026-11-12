@@ -17,7 +17,7 @@ Tandem decided; the tablet's own log is `adb logcat -s Tandem`.
 | 7 | Open Tandem from the Start menu | Settings window opens |
 | 8 | Sign in to Windows (start with Windows on) | Tray icon only, no window |
 | 9 | Open Tandem again while it runs | The running copy shows its window; no second copy |
-| 10 | Uninstall from Settings > Apps | Removed; driver removal offered only if Tandem installed it |
+| 10 | Uninstall from Settings > Apps | Removed; driver removal offered only if Tandem installed it. Nothing is left: no files in `%LOCALAPPDATA%\Programs\Tandem`, `%APPDATA%\Tandem` or `%LOCALAPPDATA%\Tandem`, no `HKCU\Software\Tandem` key, Run entry, Apps entry or shortcut; the tablet's screen is off |
 
 ## Connecting
 
@@ -67,3 +67,65 @@ Tandem decided; the tablet's own log is `adb logcat -s Tandem`.
 | 37 | Driver not installed | Line in red, **Install display driver** button; the tablet mirrors meanwhile |
 | 38 | Driver turned off in Device Manager | Line in red, **Open Device Manager**; status says to turn it on and restart |
 | 39 | Driver turned on while Tandem runs | Asks for a restart; does not capture the new screen until then |
+
+## Stream switch and tablet app
+
+| # | Scenario | Expected |
+|---|---|---|
+| 40 | **Stream to tablet** off while streaming (settings window, then again from the tray menu) | Stream stops; windows move to the main screen; the tablet's screen is off; within 2 s the tablet shows "Paused on the PC"; status and tray tooltip say Paused; **Screen mode** is greyed out |
+| 41 | **Stream to tablet** on again | The tablet's screen, the stream and the windows come back within a few seconds |
+| 42 | Paused: restart Tandem, restart the PC, unplug and replug | Still paused each time; the tablet shows "Paused on the PC" once its app connects |
+| 43 | Paused: leave the tablet alone | It goes to sleep like any idle tablet; switching the stream on wakes it (unlock it if it asks) |
+| 44 | **Restart tablet app** while streaming, while paused, and with no tablet connected | App closes and reopens; streaming (or "Paused") is back within 2 s and the tablet's screen is not turned off in between; without a tablet the button is greyed out |
+| 45 | Tablet app updated on the tablet to a newer version than the PC has | Tandem keeps using it and logs that the PC needs the update (it does not try to install the older app) |
+
+## Closing Tandem
+
+| # | Scenario | Expected |
+|---|---|---|
+| 46 | Quit from the tray menu while streaming | Windows move to the main screen and the tablet's screen turns off; the next start brings it back when the tablet connects |
+| 47 | **Restart app**, and installing an update | The tablet's screen and the windows on it stay; streaming again within a few seconds |
+| 48 | Turn the tablet's screen on yourself (Win+P Extend) before starting Tandem, then quit Tandem | Log says the screen was on before; it is still on after Tandem quits |
+| 49 | Shut down or sign out of Windows while streaming | The tablet's screen is off at the next sign-in until the tablet connects (also when Tandem does not start with Windows) |
+| 50 | Laptop + monitor + tablet: unplug the tablet, then the monitor, then plug the tablet back in | The tablet's screen comes back as a second screen (not a mirror of the laptop) |
+
+## Updates and feedback
+
+| # | Scenario | Expected |
+|---|---|---|
+| 51 | Leave Tandem running with a newer release published | About 30 s after start (and once a day) a box offers **Install now**, **Later**, **Skip this version** |
+| 52 | **Later** | No box again that day for that version; it returns the next day |
+| 53 | **Skip this version** | No box for that version again; **Check for updates** still offers it |
+| 54 | First start right after installing; no internet; latest version installed | No box in any of these (errors only in the log) |
+| 55 | **Send feedback** > **Open the report page** | Browser opens a new GitHub issue with versions, GPU/encoder, screens, driver state, tablet and the last log lines; the link is under 7,000 characters; no Windows user name and no tablet serial number in it |
+| 56 | **Send feedback** > **Open log folder** | Explorer opens `%APPDATA%\Tandem` |
+| 57 | Tablet waiting or paused screen > **Report a problem** | Explains, then opens a GitHub issue with the app version, device, Android version, screen and decoder |
+
+## Test build
+
+Some cases cannot be staged by hand on one PC. A test-only build has switches
+for them; it is never released (`dist\Tandem.exe` is built without them).
+
+```
+set CL=/DTANDEM_TEST
+host\build.bat
+```
+
+- `%TEMP%\tandem-test.txt` holding one word changes what Tandem sees, also
+  while it runs: `missing`, `disabled`, `failed`, `noscreen` (cases 37, 38) and
+  `late` (case 39) for the display driver; `othermonitor` makes it act as if
+  another monitor were attached (cases 23, 27, 36, 50). Delete the file to end.
+- `TANDEM_TEST_DPI=96..240`: lays the settings window out as at that scaling.
+- `TANDEM_TEST_UPDATE_URL`: where to ask for the latest release (a local server
+  with a made-up newer release for cases 5 and 51-53, an address that does not
+  exist for cases 6 and 54). `TANDEM_TEST_UPDATE_SECONDS`: seconds until the
+  first automatic check and between checks.
+- `TANDEM_TEST_APP_VERSION=14`: Tandem acts as if it carried an older tablet app
+  than the one on the tablet (case 45).
+- `TANDEM_TEST_FEEDBACK_FILE`: the report link is written to this file instead
+  of opening the browser (case 55).
+- Tablet app, debug build only (`gradle assembleDebug`):
+  `adb shell am start -n com.freedisplay.client/.MainActivity --ei rejectFormats 1`
+  makes every decoder reject the low-latency settings, `2` everything (case 19).
+- Cases 30 and 31 can run in the Android emulator: start the app there after
+  `adb -s emulator-5554 reverse tcp:27184 tcp:27184` (wake the emulator first).

@@ -198,6 +198,9 @@ bool SameSource(const DISPLAYCONFIG_PATH_INFO& a, const DISPLAYCONFIG_PATH_INFO&
 }
 
 bool FindDevice(DISPLAY_DEVICEW& out) {
+#ifdef TANDEM_TEST
+    if (const std::wstring f = TestFault(); f == L"missing" || f == L"disabled" || f == L"failed") return false;
+#endif
     DISPLAY_DEVICEW dd{sizeof dd};
     for (DWORD i = 0; EnumDisplayDevicesW(nullptr, i, &dd, 0); i++, dd.cb = sizeof dd) {
         if (wcsstr(dd.DeviceID, L"MttVDD") || wcsstr(dd.DeviceString, L"Virtual Display Driver")) {
@@ -307,6 +310,9 @@ bool SetTopology(int mode) {
 }
 
 bool OnlyVddBesidesBuiltIn() {
+#ifdef TANDEM_TEST
+    if (TestFault() == L"othermonitor") return false; // as with another monitor attached
+#endif
     int builtIn, vdd, other;
     return CountActive(builtIn, vdd, other) && builtIn > 0 && vdd > 0 && other == 0;
 }
@@ -317,6 +323,9 @@ bool OnlyVddActive() {
 }
 
 int ScreenState() {
+#ifdef TANDEM_TEST
+    if (const std::wstring f = TestFault(); !f.empty() && f != L"late" && f != L"othermonitor") return 0;
+#endif
     std::vector<DISPLAYCONFIG_PATH_INFO> p;
     std::vector<DISPLAYCONFIG_MODE_INFO> m;
     if (!QueryAllPaths(p, m)) return 0;

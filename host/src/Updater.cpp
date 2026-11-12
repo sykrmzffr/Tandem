@@ -110,7 +110,12 @@ std::vector<int> Parts(std::wstring v) {
 
 bool Latest(Release& out, std::wstring& error) {
     std::string json;
-    if (!Get(kLatestUrl, L"application/vnd.github+json",
+    std::wstring latestUrl = kLatestUrl;
+#ifdef TANDEM_TEST // test builds: another place to ask (a local server, or one that does not exist)
+    wchar_t fake[512];
+    if (GetEnvironmentVariableW(L"TANDEM_TEST_UPDATE_URL", fake, 512)) latestUrl = fake;
+#endif
+    if (!Get(latestUrl, L"application/vnd.github+json",
              [&](const char* data, DWORD n) {
                  json.append(data, n);
                  return json.size() < 4 * 1024 * 1024;

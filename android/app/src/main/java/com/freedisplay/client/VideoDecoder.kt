@@ -29,6 +29,9 @@ class VideoDecoder(
     private var retryAtNs = 0L // after a failed start, wait before trying again
     private var lastFailure = ""
 
+    /** True while a decoder is running (false while every attempt to start one fails). */
+    val isStarted: Boolean get() = codec != null
+
     fun configure(w: Int, h: Int) {
         release()
         width = w
@@ -69,6 +72,7 @@ class VideoDecoder(
 
     private fun fail(reason: String): MediaCodec? {
         Log.e(TAG, "video decoder did not start: $reason")
+        lastInfo = "did not start: $reason"
         if (reason != lastFailure) {
             lastFailure = reason
             onFailed(reason)
@@ -113,6 +117,7 @@ class VideoDecoder(
         running = true
         outputThread = Thread({ renderLoop(c) }, "decoder-output").also { it.start() }
         Log.i(TAG, "decoder started ${width}x$height (${c.name})")
+        lastInfo = "${c.name}, ${width}x$height"
         onStarted("${c.name}, ${width}x$height, low-latency feature: ${if (lowLatency) "yes" else "no"}")
         return c
     }
@@ -152,6 +157,7 @@ class VideoDecoder(
             for ((i, f) in listOf(format, plain).withIndex()) {
                 try {
                     if (i > 0) c.reset()
+                    if (testReject > i) throw IllegalArgumentException("rejected for a test")
                     c.configure(f, surface, null, 0)
                     if (i > 0) Log.i(TAG, "${c.name} accepted only the plain format")
                     return c
@@ -199,6 +205,15 @@ class VideoDecoder(
 
     companion object {
         private const val TAG = "Tandem"
+
+        /**
+         * Debug builds only (see MainActivity): 1 makes every decoder reject the
+         * low-latency format, 2 the plain one as well. For TESTING.md case 19.
+         */
+        @Volatile var testReject = 0
+
+        /** The decoder last used and its picture size, or why it did not start (for problem reports). */
+        @Volatile var lastInfo = "not started yet"
 
         /**
          * Largest picture with the shape of a [w] x [h] screen that the AVC decoder we

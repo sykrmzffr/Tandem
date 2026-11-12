@@ -7,6 +7,7 @@
 namespace installer {
 
 // Message the tray window accepts as "quit now" (used to stop a running copy).
+// wParam 1: a new copy starts right after, so the tablet's screen stays as it is.
 constexpr UINT kQuitMsg = WM_APP + 3;
 
 std::wstring InstallDir(); // with trailing backslash
@@ -38,6 +39,7 @@ bool Uninstall(bool quiet);
 void RemoveFreeDisplay();
 
 // Asks a running Tandem to quit and waits for it. Returns false if it would not stop.
-bool StopRunningInstance(DWORD timeoutMs = 10000);
+// `handover`: the caller starts a new copy right after (see kQuitMsg).
+bool StopRunningInstance(DWORD timeoutMs = 10000, bool handover = false);
 
 } // namespace installer

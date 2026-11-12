@@ -87,6 +87,16 @@ Echoes a PING payload unchanged, as soon as it is read.
 
 ## Host -> tablet
 
+### 12 PAUSED
+Empty payload. "Stream to tablet" is switched off on the PC. The host sends it
+in answer to HELLO instead of VIDEO_CONFIG, or as the last message of a running
+session, and then sends nothing more. It keeps the connection open and closes it
+when streaming is switched on again; the tablet then reconnects as usual. The
+tablet shows "Paused on the PC" (and stops keeping its screen awake) until the
+next connection brings video, or until a connection ends without PAUSED (the PC
+app was closed). Added in 1.3.2 without a new protocol version: an older tablet
+app ignores the message and keeps showing its waiting screen.
+
 ### 2 VIDEO_CONFIG
 | Field  | Type |
 |--------|------|
